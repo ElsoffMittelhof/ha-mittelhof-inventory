@@ -1,0 +1,81 @@
+book_transaction:
+  name: Inventarbuchung
+  description: Bucht eine Bestandsbewegung im lokalen Home-Assistant-Inventar.
+  fields:
+    kind:
+      name: Buchungsart
+      required: true
+      selector:
+        select:
+          options: [receipt, consume, transfer, adjustment_in, adjustment_out]
+    item_id:
+      name: Artikel-ID
+      required: true
+      selector: {text: {}}
+    from_location_id:
+      name: Quellstandort-ID
+      selector: {text: {}}
+    to_location_id:
+      name: Zielstandort-ID
+      selector: {text: {}}
+    quantity:
+      name: Anzahl
+      required: true
+      selector: {number: {min: 1, max: 1000000, mode: box}}
+    note:
+      name: Kommentar
+      selector: {text: {}}
+    idempotency_key:
+      name: Idempotenzschlüssel
+      description: Bei Automationen stabil pro Vorgang setzen.
+      selector: {text: {}}
+create_item:
+  name: Artikel anlegen
+  description: Legt einen Inventarartikel an.
+  fields:
+    sku:
+      name: Artikelnummer
+      required: true
+      selector: {text: {}}
+    name:
+      name: Artikelname
+      required: true
+      selector: {text: {}}
+    unit:
+      name: Einheit
+      selector: {text: {}}
+create_location:
+  name: Standort anlegen
+  description: Legt einen Lagerort an.
+  fields:
+    code:
+      name: Kürzel
+      required: true
+      selector: {text: {}}
+    name:
+      name: Standortname
+      required: true
+      selector: {text: {}}
+set_stock_policy:
+  name: Mindest- und Sollbestand
+  description: Konfiguriert Nachbestellvorschläge je Artikel und Standort.
+  fields:
+    item_id:
+      name: Artikel-ID
+      required: true
+      selector: {text: {}}
+    location_id:
+      name: Standort-ID
+      required: true
+      selector: {text: {}}
+    min_quantity:
+      name: Mindestmenge
+      required: true
+      selector: {number: {min: 0, max: 1000000, mode: box}}
+    target_quantity:
+      name: Sollmenge
+      required: true
+      selector: {number: {min: 0, max: 1000000, mode: box}}
+    reorder_multiple:
+      name: Bestellvielfaches
+      selector: {number: {min: 1, max: 1000000, mode: box}}
