@@ -1,0 +1,1 @@
+{"config":{"step":{"user":{"title":"Mittelhof Inventar lokal","description":"Inventar vollständig in Home Assistant speichern. Kein externer Server nötig."}},"abort":{"already_configured":"Mittelhof Inventar ist bereits eingerichtet."}}}
