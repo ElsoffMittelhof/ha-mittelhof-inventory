@@ -1,0 +1,17 @@
+{
+  "domain": "mittelhof_inventory",
+  "name": "Mittelhof Inventar",
+  "version": "0.7.1",
+  "documentation": "https://github.com/ElsoffMittelhof/ha-mittelhof-inventory",
+  "issue_tracker": "https://github.com/ElsoffMittelhof/ha-mittelhof-inventory/issues",
+  "codeowners": [
+    "@ElsoffMittelhof"
+  ],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "dependencies": [
+    "http"
+  ],
+  "requirements": []
+}
