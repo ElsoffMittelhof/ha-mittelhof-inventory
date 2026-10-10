@@ -1,0 +1,1 @@
+DOMAIN = "mittelhof_inventory"
