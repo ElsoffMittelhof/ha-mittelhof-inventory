@@ -711,15 +711,11 @@ class InventoryAdmin extends InventoryBase {
   async removeItem(){
     const item=this.data.items.find(x=>x.id===this.$("delete-item").value);
     if(!item){this.$("status").textContent="Artikel auswählen.";return;}
-    const confirmation="DELETE:"+item.sku;
-    if(window.prompt("Artikel "+item.name+" inklusive aller Bestände und Buchungen löschen?\nZum Bestätigen genau "+confirmation+" eingeben:")!==confirmation)
-      return;
-    if(!window.confirm("Letzte Warnung: "+item.name+" wirklich unwiderruflich löschen?")) return;
-    await this.action("delete_item",{item_id:item.id,confirmation});
+    if(!window.confirm('Artikel "'+item.name+'" ('+item.sku+') inklusive aller Bestände und Buchungen unwiderruflich löschen?'))return;
+    await this.action("delete_item",{item_id:item.id,confirmation:"DELETE:"+item.sku});
   }
   async resetStock(){
-    if(window.prompt("ALLE BESTÄNDE UND BUCHUNGEN LÖSCHEN! Artikel und Standorte bleiben.\nGenau BESTAND LOESCHEN eingeben:")!=="BESTAND LOESCHEN")return;
-    if(!window.confirm("Letzte Warnung: Gesamten Bestand tatsächlich zurücksetzen?"))return;
+    if(!window.confirm("ACHTUNG: Alle Bestände, Inventurmarkierungen und Buchungen unwiderruflich löschen? Artikel, Standorte und Kategorien bleiben bestehen."))return;
     await this.action("reset_stock",{confirmation:"BESTAND LOESCHEN"});
   }
 }
@@ -866,8 +862,6 @@ class InventoryStructureAdmin extends InventoryBase {
       + '<label>Bestehende Kategorie<select id="category"></select></label>'
       + '<label>Name bearbeiten<input id="category-name" /></label>'
       + '<button id="save-category">Kategorie umbenennen</button>'
-      + '<label>Zum Löschen genau DELETE_CATEGORY:&lt;Name&gt; eingeben'
-      + '<input id="category-confirm" placeholder="DELETE_CATEGORY:Name" /></label>'
       + '<button id="delete-category" class="danger">Unbenutzte Kategorie löschen</button>'
       + '<div id="category-status" class="status" role="status"></div></section>'
       + '<section><h3>Inventurbereich anlegen / bearbeiten</h3>'
@@ -879,8 +873,6 @@ class InventoryStructureAdmin extends InventoryBase {
       + 'pro Standort kann ein Artikel nur in einem Bereich geführt werden.</div>'
       + '<div id="area-items"></div>'
       + '<button id="save-area">Inventurbereich speichern</button>'
-      + '<label>Zum Löschen genau DELETE_AREA:&lt;Name&gt; eingeben'
-      + '<input id="area-confirm" placeholder="DELETE_AREA:Name" /></label>'
       + '<button id="delete-area" class="danger">Inventurbereich löschen</button>'
       + '<div id="area-status" class="status" role="status"></div></section>'
       + '<section><h3>QR-Etiketten für Inventurbereiche</h3>'
@@ -894,8 +886,6 @@ class InventoryStructureAdmin extends InventoryBase {
       + 'Sie verschwinden aus der Auswahl; alte Buchungen bleiben als Historie erhalten.</p>'
       + '<label>Standort<select id="delete-location"></select></label>'
       + '<div id="delete-location-info" class="hint"></div>'
-      + '<label>Bestätigung DELETE_LOCATION:&lt;Kürzel&gt;'
-      + '<input id="location-confirm" placeholder="DELETE_LOCATION:KÜRZEL" /></label>'
       + '<button id="remove-location" class="danger">Standort entfernen</button>'
       + '<div id="location-status" class="status" role="status"></div></section>'
       + '</div></ha-card><style>'+css+'</style>';
@@ -988,11 +978,10 @@ class InventoryStructureAdmin extends InventoryBase {
   }
   deleteCategory(){
     const c=this.data.categories.find(x=>x.id===this.$("category").value);
-    if(!c||this.$("category-confirm").value!=="DELETE_CATEGORY:"+c.name){
-      this.$("category-status").textContent="Bestätigung stimmt nicht.";return;
-    }
-    this.action("delete_category",{category_id:c.id,confirmation:this.$("category-confirm").value},
-      ()=>{this.$("category-confirm").value="";},"category-status");
+    if(!c){this.$("category-status").textContent="Kategorie auswählen.";return;}
+    if(!window.confirm('Kategorie "'+c.name+'" endgültig löschen? Sie darf keine Artikel oder Inventurbereiche enthalten.'))return;
+    this.action("delete_category",{category_id:c.id,confirmation:"DELETE_CATEGORY:"+c.name},
+      null,"category-status");
   }
   saveArea(){
     const id=this.$("area").value;
@@ -1011,11 +1000,10 @@ class InventoryStructureAdmin extends InventoryBase {
   }
   deleteArea(){
     const area=this.data.areas.find(x=>x.id===this.$("area").value);
-    if(!area||this.$("area-confirm").value!=="DELETE_AREA:"+area.name){
-      this.$("area-status").textContent="Bitte DELETE_AREA:<Name> exakt eingeben.";return;
-    }
-    this.action("delete_area",{area_id:area.id,confirmation:this.$("area-confirm").value},()=>{
-      this.$("area-confirm").value="";this._loadedAreaId=null;
+    if(!area){this.$("area-status").textContent="Inventurbereich auswählen.";return;}
+    if(!window.confirm('Inventurbereich "'+area.name+'" entfernen? Der QR-Code wird ungültig. Artikel und ihre Bestände bleiben erhalten.'))return;
+    this.action("delete_area",{area_id:area.id,confirmation:"DELETE_AREA:"+area.name},()=>{
+      this._loadedAreaId=null;
     },"area-status");
   }
   printAreas(){
@@ -1034,12 +1022,17 @@ class InventoryStructureAdmin extends InventoryBase {
   }
   deleteLocation(){
     const loc=this.data.locations.find(x=>x.id===this.$("delete-location").value);
-    if(!loc||this.$("location-confirm").value!=="DELETE_LOCATION:"+loc.code){
-      this.$("location-status").textContent="Bitte DELETE_LOCATION:<Kürzel> exakt eingeben.";return;
+    if(!loc){this.$("location-status").textContent="Standort auswählen.";return;}
+    const positive=this.data.stock.filter(x=>x.location_id===loc.id&&x.quantity>0);
+    const total=positive.reduce((sum,x)=>sum+Number(x.quantity),0);
+    if(total>0){
+      this.$("location-status").textContent="Standort hat noch "+total+" Einheiten. Vorher umbuchen; keine Löschung möglich.";
+      return;
     }
+    if(!window.confirm('Standort "'+loc.name+'" entfernen? Er wird ausgeblendet, zugehörige Inventurbereiche deaktiviert. Alte Buchungen bleiben erhalten.'))return;
     this.action("delete_location",{
-      location_id:loc.id,confirmation:this.$("location-confirm").value
-    },()=>{this.$("location-confirm").value="";},"location-status");
+      location_id:loc.id,confirmation:"DELETE_LOCATION:"+loc.code
+    },null,"location-status");
   }
 }
 
