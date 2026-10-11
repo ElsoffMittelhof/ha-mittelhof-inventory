@@ -259,5 +259,125 @@ class InventoryTests(unittest.TestCase):
 
 
 
+    def test_categories_persist_rename_and_delete_safely(self):
+        db=fresh()
+        mod.InventoryStore._migrate(db)
+        cat=mod.InventoryStore._apply(db,"create_category",{"name":"Besteck"})
+        db["items"][0]["category_id"]=cat["id"]
+        mod.InventoryStore._apply(db,"update_category",{
+            "category_id":cat["id"],"name":"Essbesteck","active":True})
+        self.assertEqual(db["items"][0]["category"],"Essbesteck")
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"delete_category",{
+                "category_id":cat["id"],"confirmation":"DELETE_CATEGORY:Essbesteck"})
+        db["items"][0]["category_id"]=db["categories"][0]["id"]
+        mod.InventoryStore._apply(db,"delete_category",{
+            "category_id":cat["id"],"confirmation":"DELETE_CATEGORY:Essbesteck"})
+        mod.InventoryStore._migrate(db)
+        self.assertFalse(any(x["name"]=="Essbesteck" for x in db["categories"]))
+
+    def test_area_membership_category_location_and_unique(self):
+        db=fresh()
+        mod.InventoryStore._migrate(db)
+        cat=db["items"][0]["category_id"]
+        other=mod.InventoryStore._apply(db,"create_item",{
+            "name":"Löffel","location_ids":["l13"],"category_id":cat})
+        a=mod.InventoryStore._apply(db,"create_area",{
+            "name":"Besteckschublade","location_id":"l13",
+            "category_id":cat,"item_ids":["i1",other["id"]]})
+        self.assertIn("i1",a["item_ids"])
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"create_area",{
+                "name":"Zweite Schublade","location_id":"l13",
+                "category_id":cat,"item_ids":["i1"]})
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"create_area",{
+                "name":"Falscher Ort","location_id":"l14",
+                "category_id":cat,"item_ids":[other["id"]]})
+        self.assertEqual(db["areas"][0]["id"],a["id"])
+
+    def test_group_stocktake_atomic_conflict_and_idempotency(self):
+        db=fresh()
+        mod.InventoryStore._migrate(db)
+        cat=db["items"][0]["category_id"]
+        other=mod.InventoryStore._apply(db,"create_item",{
+            "name":"Messer","location_ids":["l13"],"category_id":cat})
+        area=mod.InventoryStore._apply(db,"create_area",{
+            "name":"Besteckschublade","location_id":"l13",
+            "category_id":cat,"item_ids":["i1",other["id"]]})
+        records=[{"item_id":"i1","quantity":8,"expected_quantity":0,"expected_counted":False},
+                 {"item_id":other["id"],"quantity":9,"expected_quantity":0,"expected_counted":False}]
+        payload={"area_id":area["id"],"counts":records,"idempotency_key":"group-1"}
+        receipt=mod.InventoryStore._apply(db,"count_area",payload)
+        self.assertEqual(receipt["positions"],2)
+        self.assertEqual(sum(db["stock"].values()),17)
+        self.assertEqual(mod.InventoryStore._apply(db,"count_area",payload),receipt)
+        self.assertEqual(len(db["transactions"]),2)
+        before=dict(db["stock"])
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"count_area",{
+                "area_id":area["id"],"idempotency_key":"group-2",
+                "counts":[{"item_id":"i1","quantity":5,"expected_quantity":8,"expected_counted":True},
+                          {"item_id":other["id"],"quantity":6,"expected_quantity":0,"expected_counted":False}]})
+        self.assertEqual(db["stock"],before)
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"count_area",{
+                **payload,"idempotency_key":"group-3",
+                "counts":[{"item_id":"i1","quantity":0,"expected_quantity":8,"expected_counted":False}]})
+        self.assertEqual(db["stock"],before)
+
+    def test_delete_location_requires_zero_and_keeps_history_and_no_resurrection(self):
+        db=fresh()
+        mod.InventoryStore._migrate(db)
+        mod.InventoryStore._apply(db,"set_count",{
+            "item_id":"i1","location_id":"l13","quantity":8,
+            "expected_quantity":0,"idempotency_key":"count8"})
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"delete_location",{
+                "location_id":"l13","confirmation":"DELETE_LOCATION:13"})
+        mod.InventoryStore._apply(db,"set_count",{
+            "item_id":"i1","location_id":"l13","quantity":0,
+            "expected_quantity":8,"idempotency_key":"count0"})
+        mod.InventoryStore._apply(db,"delete_location",{
+            "location_id":"l13","confirmation":"DELETE_LOCATION:13"})
+        self.assertFalse(next(x for x in db["locations"] if x["id"]=="l13")["active"])
+        self.assertNotIn("i1|l13",db["item_locations"])
+        self.assertEqual(len(db["transactions"]),2)
+        model=mod.InventoryStore.__new__(mod.InventoryStore)
+        model.data=db
+        self.assertNotIn("l13",[x["id"] for x in model.snapshot()["locations"]])
+        self.assertNotIn("l13",[x["location_id"] for x in model.snapshot()["stock"]])
+        mod.InventoryStore._migrate(db)
+        self.assertNotIn("i1|l13",db["item_locations"])
+
+    def test_delete_location_deactivates_area_and_invalidates_qr(self):
+        db=fresh()
+        mod.InventoryStore._migrate(db)
+        category=db["items"][0]["category_id"]
+        area=mod.InventoryStore._apply(db,"create_area",{
+            "name":"Besteck","location_id":"l13",
+            "category_id":category,"item_ids":["i1"]})
+        mod.InventoryStore._apply(db,"delete_location",{
+            "location_id":"l13","confirmation":"DELETE_LOCATION:13"})
+        self.assertFalse(db["areas"][0]["active"])
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"count_area",{
+                "area_id":area["id"],"counts":[{"item_id":"i1","quantity":0,
+                "expected_quantity":0,"expected_counted":False}],"idempotency_key":"x"})
+
+    def test_group_inventory_can_count_zero_as_counted(self):
+        db=fresh()
+        mod.InventoryStore._migrate(db)
+        area=mod.InventoryStore._apply(db,"create_area",{
+            "name":"Besteck","location_id":"l13",
+            "category_id":db["items"][0]["category_id"],"item_ids":["i1"]})
+        mod.InventoryStore._apply(db,"count_area",{
+            "area_id":area["id"],"idempotency_key":"z",
+            "counts":[{"item_id":"i1","quantity":0,
+                       "expected_quantity":0,"expected_counted":False}]})
+        self.assertEqual(db["stock"]["i1|l13"],0)
+        self.assertIn("i1|l13",db["counted"])
+
+
 if __name__ == "__main__":
     unittest.main()
