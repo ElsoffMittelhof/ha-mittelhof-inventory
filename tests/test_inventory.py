@@ -26,7 +26,9 @@ LOC2 = {"id": "l14", "code": "14", "name": "Haus 14"}
 
 def fresh():
     return {"items": [dict(ITEM)], "locations": [dict(LOC1), dict(LOC2)],
-            "stock": {}, "counted": {}, "policies": [], "transactions": [], "audit": []}
+            "stock": {}, "counted": {}, "policies": [], "transactions": [], "audit": [],
+            "item_locations": {"i1|l13": {"id": "a13", "item_id": "i1", "location_id": "l13"},
+                               "i1|l14": {"id": "a14", "item_id": "i1", "location_id": "l14"}}}
 
 
 class InventoryTests(unittest.TestCase):
@@ -115,6 +117,68 @@ class InventoryTests(unittest.TestCase):
             "item_id": "i1", "location_id": "l13", "quantity": 2,
             "expected_quantity": 0, "idempotency_key": "s"})
         self.assertEqual(model.snapshot()["suggestions"][0]["suggested_quantity"], 8)
+
+
+    def test_auto_numbers_never_reused_after_delete(self):
+        db=fresh()
+        p={"name":"Glas","unit":"Stück","category":"Geschirr","location_ids":["l13"]}
+        a=mod.InventoryStore._apply(db,"create_item",p)
+        b=mod.InventoryStore._apply(db,"create_item",{**p,"name":"Teller"})
+        self.assertEqual([a["sku"],b["sku"]],["A-000001","A-000002"])
+        mod.InventoryStore._apply(db,"delete_item",{
+            "item_id":a["id"],"confirmation":"DELETE:A-000001"})
+        c=mod.InventoryStore._apply(db,"create_item",{**p,"name":"Messer"})
+        self.assertEqual(c["sku"],"A-000003")
+        self.assertIn(c["id"]+"|l13",db["item_locations"])
+        self.assertEqual(db["next_item_number"],4)
+
+    def test_auto_numbers_migrate_old_sku_without_changing_identity(self):
+        db=fresh()
+        db["items"].append({"id":"legacy","sku":"A-000011","name":"Alt","unit":"Stück"})
+        original=mod.InventoryStore._apply(db,"create_item",
+            {"name":"Neu","location_ids":["l14"]})
+        self.assertEqual(original["sku"],"A-000012")
+        self.assertEqual(db["items"][1]["id"],"legacy")
+
+    def test_assignment_only_at_lager_and_no_phantom_houses(self):
+        db=fresh()
+        db["locations"].append({"id":"lager","code":"LAGER","name":"Lager"})
+        tool=mod.InventoryStore._apply(db,"create_item",
+            {"name":"Rasenmäher","location_ids":["lager"],"category":"Gartengerät"})
+        self.assertEqual({k for k in db["item_locations"] if k.startswith(tool["id"])},
+                         {tool["id"]+"|lager"})
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"set_count",{
+                "item_id":tool["id"],"location_id":"l13","quantity":1,
+                "expected_quantity":0,"idempotency_key":"wrong-house"})
+        mod.InventoryStore._apply(db,"set_count",{
+            "item_id":tool["id"],"location_id":"lager","quantity":1,
+            "expected_quantity":0,"idempotency_key":"lager"})
+        snap=mod.InventoryStore.__new__(mod.InventoryStore)
+        snap.data=db
+        found=next(i for i in snap.snapshot()["items"] if i["id"]==tool["id"])
+        self.assertEqual(found["location_ids"],["lager"])
+
+    def test_bulk_assignment_is_atomic_and_cannot_remove_stock(self):
+        db=fresh()
+        mod.InventoryStore._apply(db,"set_count",{
+            "item_id":"i1","location_id":"l13","quantity":8,
+            "expected_quantity":0,"idempotency_key":"assigned-count"})
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"set_item_locations",{
+                "item_id":"i1","location_ids":["l14"]})
+        self.assertIn("i1|l13",db["item_locations"])
+        mod.InventoryStore._apply(db,"set_item_locations",{
+            "item_id":"i1","location_ids":["l13"]})
+        self.assertNotIn("i1|l14",db["item_locations"])
+        self.assertEqual(db["stock"]["i1|l13"],8)
+
+    def test_reset_keeps_catalog_and_assignments(self):
+        db=fresh()
+        mod.InventoryStore._apply(db,"reset_stock",{
+            "confirmation":"BESTAND LOESCHEN"})
+        self.assertIn("i1|l13",db["item_locations"])
+        self.assertEqual(db["stock"],{})
 
 
 if __name__ == "__main__":
