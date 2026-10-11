@@ -65,6 +65,8 @@ class InventoryStore:
             if match:
                 seq = max(seq, int(match.group(1)) + 1)
             item.setdefault("category", "Allgemein")
+            item.setdefault("manufacturer", "")
+            item.setdefault("product_name", "")
         db["next_item_number"] = seq
         old = set(db["stock"]) | set(db["counted"]) | {
             p["item_id"] + "|" + p["location_id"] for p in db["policies"]
@@ -122,7 +124,7 @@ class InventoryStore:
                     "quantity": quantity, "suggested_quantity": proposed,
                 })
         return {"items": items, "locations": locations, "stock": stock,
-                "suggestions": suggestions}
+                "suggestions": suggestions, "policies": copy.deepcopy(self.data["policies"])}
 
     async def mutate(self, operation, payload):
         async with self._lock:
@@ -152,11 +154,27 @@ class InventoryStore:
             db["next_item_number"] = seq + 1
             entity = {"id": str(uuid4()), "sku": sku, "name": name,
                       "unit": p.get("unit", "Stück").strip() or "Stück",
-                      "category": p.get("category", "Allgemein").strip() or "Allgemein"}
+                      "category": p.get("category", "Allgemein").strip() or "Allgemein",
+                      "manufacturer": p.get("manufacturer", "").strip(),
+                      "product_name": p.get("product_name", "").strip()}
             db["items"].append(entity)
             for loc in selected:
                 InventoryStore._assign(db, entity["id"], loc)
             return entity
+        if operation == "update_item":
+            item = next((x for x in db["items"] if x["id"] == p["item_id"]), None)
+            if item is None:
+                raise InventoryError("Artikel nicht gefunden")
+            name = p["name"].strip()
+            if not name:
+                raise InventoryError("Artikelname fehlt")
+            item.update({"name": name,
+                         "unit": p.get("unit", "Stück").strip() or "Stück",
+                         "manufacturer": p.get("manufacturer", "").strip(),
+                         "product_name": p.get("product_name", "").strip()})
+            db["audit"].append({"id": str(uuid4()), "action": "update_item",
+                                "at": now(), "item_id": item["id"], "actor": p.get("actor")})
+            return copy.deepcopy(item)
         if operation == "set_item_locations":
             item_id = p["item_id"]
             wanted = p["location_ids"]
@@ -198,7 +216,7 @@ class InventoryStore:
             return True
         if operation == "create_location":
             code, name = p["code"].strip(), p["name"].strip()
-            if not code or not name or any(x["code"].casefold() == code.casefold() for x in db["locations"]):
+            if not code or not name or any(x["code"].casefold() == code.casefold() or x["name"].casefold() == name.casefold() for x in db["locations"]):
                 raise InventoryError("Standortkürzel/Name fehlt oder Kürzel bereits vorhanden")
             entity = {"id": str(uuid4()), "code": code, "name": name}
             db["locations"].append(entity)
