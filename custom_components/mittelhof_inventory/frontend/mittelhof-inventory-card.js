@@ -24,6 +24,20 @@ const css = `
   .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap: 12px; }
 `;
 
+function newTransactionId() {
+  // crypto.randomUUID() and camera APIs may be unavailable on HA iOS over local HTTP.
+  // getRandomValues() is also available in insecure browser contexts.
+  const cryptoApi=globalThis.crypto;
+  if (cryptoApi?.getRandomValues) {
+    const bytes=new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    return Array.from(bytes,byte=>byte.toString(16).padStart(2,"0")).join("");
+  }
+  // Only an idempotency key, never an authentication credential.
+  return "fallback-"+Date.now().toString(36)+"-"+
+    Math.random().toString(36).slice(2)+"-"+Math.random().toString(36).slice(2);
+}
+
 function el(tag, text, parent, cls = "") {
   const node = document.createElement(tag);
   if (text !== undefined && text !== null) node.textContent = String(text);
@@ -342,7 +356,7 @@ class InventoryCapture extends InventoryBase {
       const prev=this.data.stock.find(x=>x.item_id===id&&x.location_id===loc)?.quantity??0;
       if(!window.confirm("Istbestand auf "+q+" setzen? Bisher: "+prev+". Die Differenz wird protokolliert."))return;
       await this.action("set_count",{item_id:id,location_id:loc,quantity:q,
-        expected_quantity:prev,idempotency_key:crypto.randomUUID(),note},()=>this.afterSuccess());
+        expected_quantity:prev,idempotency_key:newTransactionId(),note},()=>this.afterSuccess());
     } else {
       const from=type==="transfer"?src:(type==="consume"?loc:undefined);
       const to=type==="transfer"?dst:(type==="receipt"?loc:undefined);
@@ -351,7 +365,7 @@ class InventoryCapture extends InventoryBase {
       }
       await this.action("book_transaction",{kind:type,item_id:id,
         from_location_id:from,to_location_id:to,quantity:q,
-        idempotency_key:crypto.randomUUID(),note},()=>this.afterSuccess());
+        idempotency_key:newTransactionId(),note},()=>this.afterSuccess());
     }
   }
   afterSuccess() {
