@@ -1,5 +1,23 @@
 # Mittelhof Inventar (Home Assistant / HACS)
 
+## v0.9.1 – iPhone-Buchungen, Bestätigungen, Artikeldetails und weitere Standorte
+
+**Wichtiger Fehlerbehebungsstand für die Erstinventur:** In v0.9.0 wurde `crypto.randomUUID()` nach dem Bestätigungsdialog aufgerufen. Die API ist nur über HTTPS/andere sichere Browserkontexte verfügbar und kann in der Home-Assistant-iPhone-App über lokale HTTP-Adressen fehlen. Die neue Version erzeugt Idempotenzschlüssel stattdessen mit dem auch über lokales HTTP verfügbaren `crypto.getRandomValues()` (mit einer Notfall-Ausweichfunktion). Gleichzeitig liefert ein neu registrierter, nur für HA-Administratoren zugänglicher WebSocket-Buchungsweg nach der Store-Schreibaktion eine serverseitige Quittung und kann den aktuellen Stand erneut lesen. Damit kann die UI Fehler unmittelbar neben dem Buchungs- oder Regelbutton zeigen und nach bestätigter Speicherung explizit auf die neue Menge verweisen. Der Screenshot allein belegt **nicht**, dass `crypto.randomUUID()` die einzige Ursache war; reale iPhone-/HA-Tests stehen noch aus.
+
+**Artikeldetails:** Beim Anlegen und Bearbeiten eines Artikels können `Hersteller` und `Genaue Produktbezeichnung / Modell` optional eingetragen werden, z. B. `Makita` und `DHP484`. Bestehende Artikel erhalten bei Migration leere Werte; IDs, Artikelnummern und Lagerbestände bleiben erhalten. Es gibt einen separaten Admin-Service `mittelhof_inventory.update_item`. Die angelegte SKU wird dabei niemals geändert.
+
+**Neue Standorte:** Unter Verwaltung → Standort anlegen existieren Schnellvorlagen für *Garage 1*, *Garage 2*, *Carport*, *Werkstatt*, *Stall*, *Gartenhaus*, *Waschküche* und *Dachboden*. Die Vorschläge füllen lediglich Code/Namen; erst ein expliziter Klick auf *Standort anlegen* speichert. Andere Standorte können weiter frei angelegt werden. Doppelte Codes **und** identische Namen werden abgelehnt. Bestehende Standort-IDs werden nicht verändert oder automatisch zusammengeführt; Altstandorte wie `Mittelhof Nr. 13` bewusst prüfen.
+
+**QR auf dem iPhone:** Wenn die laufende HA-App keinen Kamerazugriff zulässt, öffnet der Scan-Button jetzt den Kamera-Foto-/Dateidialog. Das Foto wird mit dem lokal eingebundenen Decoder untersucht. Kamera-Live-Scan über eine lokale HTTP-URL benötigt im Allgemeinen HTTPS; keine sichere Zusage für iOS-WebViews. Die spätere Umstellung auf **einen QR je Inventurbereich** (z. B. *Haus 13 → Besteckschublade* mit Gabel, Messer, Löffel) und frei bearbeitbare Kategorien ist gesondert für v1.0 entworfen, **noch nicht Teil v0.9.1**.
+
+**Installation:** Vorher vollständiges HA-Backup, HACS auf `v0.9.1` aktualisieren, HA neu starten und genau eine Modulressource
+
+```text
+/mittelhof_inventory/frontend/mittelhof-inventory-card.js?v=0.9.1
+```
+
+verwenden. Die separate Dashboarddatei `dashboards/inventar.yaml` aus dem privaten Repository bleibt kompatibel; `dashboards/mittelhof.yaml` und der Smoobu-Wäscheworkflow bleiben unverändert. Für den Funktionstest nach Upgrade zuerst **Gabel × Haus 13** mit gezählter Menge 8 buchen. Direkt neben `Bestand speichern` muss eine grüne Quittung mit `8 Stück` und Buchungs-ID erscheinen; im Fehlerfall der Grund. Danach die Übersicht neu laden und den Wert prüfen. Nicht blind mehrfach buchen, falls eine Fehlermeldung nach bereits erfolgter serverseitiger Quittung erscheint.
+
 ## v0.9.0 – Automatische Nummerierung, Standortzuordnung und Kombi-QR
 
 ### Artikelstamm und vier Mittelhof-Standorte
