@@ -1,7 +1,7 @@
 import "./vendor/qrgen.js";
 import "./vendor/jsQR.js";
 
-/* Mittelhof Inventar 1.0.0 – local-only HA cards. No remote QR endpoints. */
+/* Mittelhof Inventar 1.0.1 – local-only HA cards. No remote QR endpoints. */
 const DOMAIN = "mittelhof_inventory";
 const DEFAULT_CAPTURE_PATH = "/inventar-dashboard/erfassung";
 const css = `
@@ -545,7 +545,6 @@ class InventoryAdmin extends InventoryBase {
 
     this.$("delete").onclick=()=>this.removeItem();
     this.$("reset").onclick=()=>this.resetStock();
-    this.$("base").value=window.location.origin;
   }
   update(){
     if(!this._ready)return;
