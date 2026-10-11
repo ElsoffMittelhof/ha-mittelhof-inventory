@@ -16,6 +16,7 @@ jobs:
       - run: node --check custom_components/mittelhof_inventory/frontend/vendor/qrgen.js
       - run: python -m unittest discover -s tests -v
       - run: node tests/test_qr.cjs
+      - run: node tests/test_ios_http.cjs
       - run: python -c "import json,pathlib;json.loads(pathlib.Path('hacs.json').read_text());json.loads(pathlib.Path('custom_components/mittelhof_inventory/manifest.json').read_text())"
   hacs:
     runs-on: ubuntu-latest
@@ -30,8 +31,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
 
-  release_v090:
-    name: Publish v0.9.0 after successful validation
+  release_v091:
+    name: Publish v0.9.1 after successful validation
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [syntax, hacs, hassfest]
     runs-on: ubuntu-latest
@@ -39,31 +40,31 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Create GitHub Release v0.9.0 if missing
+      - name: Create GitHub Release v0.9.1 if missing
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           version=$(python -c 'import json; print(json.load(open("custom_components/mittelhof_inventory/manifest.json"))["version"])')
-          if [[ "$version" != "0.9.0" ]]; then
-            echo "Manifest version changed; this release job is scoped to v0.9.0."
+          if [[ "$version" != "0.9.1" ]]; then
+            echo "Manifest version changed; this release job is scoped to v0.9.1."
             exit 0
           fi
-          if gh release view v0.9.0 >/dev/null 2>&1; then
-            echo "Release v0.9.0 already exists."
+          if gh release view v0.9.1 >/dev/null 2>&1; then
+            echo "Release v0.9.1 already exists."
             exit 0
           fi
           cat > /tmp/inventory-release-notes.md <<'EOF'
-          Mittelhof Inventar v0.9.0 (Home Assistant / HACS)
+          Mittelhof Inventar v0.9.1 (Home Assistant / HACS)
           
-          - Generate monotonic, unique article numbers automatically on the HA server.
-          - Maintain active inventory site assignments (House 13/14/15 and Lager) per article.
-          - Print one QR sticker per article + site combination.
-          - Prefill the current stock for the scanned pair and show an explicit difference before saving.
-          - Replace BarcodeDetector dependency with bundled offline jsQR live camera and photo scanning.
-          - Preserve article IDs and existing stock through an additive migration.
+          - Fix iOS/local-HTTP inventory booking by removing the secure-context-only crypto.randomUUID dependency.
+          - Return acknowledged write receipts and authoritative stock/policy readback via authenticated Home Assistant WebSocket.
+          - Show clear save success and errors directly beside booking and policy buttons.
+          - Add optional manufacturer and exact product/model designation, including later edits.
+          - Offer quick-add locations for Garage 1/2, Carport, Workshop, Stable, Garden Shed, Laundry Room and Attic.
+          - Keep all existing items, UUIDs, locations and stock unchanged.
 
           Existing inventory data is preserved. Back up Home Assistant before upgrading.
           EOF
-          gh release create v0.9.0 --target "$GITHUB_SHA" --title "v0.9.0" --notes-file /tmp/inventory-release-notes.md
+          gh release create v0.9.1 --target "$GITHUB_SHA" --title "v0.9.1" --notes-file /tmp/inventory-release-notes.md
