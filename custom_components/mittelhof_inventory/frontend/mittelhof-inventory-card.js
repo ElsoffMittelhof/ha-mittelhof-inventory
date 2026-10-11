@@ -331,15 +331,21 @@ class InventoryCapture extends InventoryBase {
   }
   applyQr(urlText) {
     const url=new URL(urlText);
-    if(url.origin!==window.location.origin) throw Error("QR-Link gehört nicht zu diesem HA-Server");
+    const route=(this.config?.capture_path||DEFAULT_CAPTURE_PATH).replace(/\\/$/,"");
+    if(!["http:","https:"].includes(url.protocol)||url.pathname.replace(/\\/$/,"")!==route)
+      throw Error("Kein gültiger Mittelhof-Erfassungslink");
     const itemId=url.searchParams.get("inventory_item"),locId=url.searchParams.get("inventory_location");
     const {items,locations}=this.data;
-    if(itemId && items.some(x=>x.id===itemId)) this.$("item").value=itemId;
+    const item=items.find(x=>x.id===itemId);
+    if(!item || !locations.some(x=>x.id===locId) ||
+       !(item.location_ids||[]).includes(locId))
+      throw Error("Artikel-Standort-Kombination unbekannt oder nicht aktiv");
+    this.$("item").value=itemId;
     if(locId && locations.some(x=>x.id===locId)){
       this.$("loc").value=locId;
       try{window.sessionStorage.setItem("mittelhof_inventory_location",locId);}catch(e){}
     }
-    if(!itemId||!locId) throw Error("Etikett benötigt Artikel und Standort");
+
     this._quantitySource="";this.updateCurrent();this.$("status").textContent="QR-Code erkannt. Menge eingeben und bestätigen.";
   }
   readQRFromCanvas(canvas) {
