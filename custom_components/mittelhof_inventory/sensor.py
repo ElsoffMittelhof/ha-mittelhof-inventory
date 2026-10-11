@@ -8,6 +8,8 @@ DESCRIPTIONS = (
     SensorEntityDescription(key="locations", name="Inventar Standorte", icon="mdi:warehouse"),
     SensorEntityDescription(key="stock", name="Inventar Bestandspositionen", icon="mdi:clipboard-list-outline"),
     SensorEntityDescription(key="suggestions", name="Inventar Fehlbestände", icon="mdi:alert-circle-outline"),
+    SensorEntityDescription(key="categories", name="Inventar Kategorien", icon="mdi:shape-outline"),
+    SensorEntityDescription(key="areas", name="Inventar Bereiche", icon="mdi:qrcode-scan"),
 )
 
 async def async_setup_entry(hass, entry, async_add_entities):
