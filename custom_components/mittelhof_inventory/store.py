@@ -61,7 +61,7 @@ class InventoryStore:
         seq = max(1, int(db.get("next_item_number", 1)))
         for item in db["items"]:
             # Retain legacy SKUs; never change IDs referenced by an old QR or ledger.
-            match = re.fullmatch(r"A-(\\d+)", item.get("sku", ""))
+            match = re.fullmatch(r"A-(\d+)", item.get("sku", ""))
             if match:
                 seq = max(seq, int(match.group(1)) + 1)
             item.setdefault("category", "Allgemein")
