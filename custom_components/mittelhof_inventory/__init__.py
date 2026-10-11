@@ -42,7 +42,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.data[DOMAIN].get("_frontend_registered"):
         frontend_path = Path(__file__).parent / "frontend" / "mittelhof-inventory-card.js"
         await hass.http.async_register_static_paths([
-            StaticPathConfig("/mittelhof_inventory/frontend/mittelhof-inventory-card.js", str(frontend_path), True)
+            StaticPathConfig("/mittelhof_inventory/frontend/mittelhof-inventory-card.js", str(frontend_path), True),
+            StaticPathConfig("/mittelhof_inventory/frontend/vendor/qrgen.js", str(frontend_path.parent / "vendor" / "qrgen.js"), True)
         ])
         hass.data[DOMAIN]["_frontend_registered"] = True
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
