@@ -26,3 +26,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
+
+  release_v072:
+    name: Publish v0.7.2 after successful validation
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [syntax, hacs, hassfest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release v0.7.2 if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python -c 'import json; print(json.load(open("custom_components/mittelhof_inventory/manifest.json"))["version"])')
+          if [[ "$version" != "0.7.2" ]]; then
+            echo "Manifest version changed; this release job is scoped to v0.7.2."
+            exit 0
+          fi
+          if gh release view v0.7.2 >/dev/null 2>&1; then
+            echo "Release v0.7.2 already exists."
+            exit 0
+          fi
+          cat > /tmp/inventory-release-notes.md <<'EOF'
+          Mittelhof Inventar v0.7.2 (Home Assistant / HACS)
+          
+          - Correctly display article numbers in the stock-by-location overview.
+          - Reset the booking input fields after successful transactions.
+          - Add stock-preserving transfers between storage locations and houses.
+          - Include the Mittelhof brand icon for HACS.
+          
+          Existing inventory data is preserved. Back up Home Assistant before upgrading.
+          EOF
+          gh release create v0.7.2 --target "$GITHUB_SHA" --title "v0.7.2" --notes-file /tmp/inventory-release-notes.md
