@@ -157,6 +157,29 @@ class InventoryStore:
             for loc in selected:
                 InventoryStore._assign(db, entity["id"], loc)
             return entity
+        if operation == "set_item_locations":
+            item_id = p["item_id"]
+            wanted = p["location_ids"]
+            if item_id not in {x["id"] for x in db["items"]}:
+                raise InventoryError("Artikel unbekannt")
+            valid = {x["id"] for x in db["locations"]}
+            if len(set(wanted)) != len(wanted) or any(loc not in valid for loc in wanted):
+                raise InventoryError("Ungültige oder doppelte Standorte")
+            old = {v["location_id"] for v in db["item_locations"].values()
+                   if v["item_id"] == item_id}
+            for loc in old - set(wanted):
+                if db["stock"].get(item_id + "|" + loc, 0):
+                    raise InventoryError("Bestand vorhanden: Standort zuerst leeren")
+            for loc in old - set(wanted):
+                key = item_id + "|" + loc
+                db["item_locations"].pop(key, None)
+                db["stock"].pop(key, None)
+                db["counted"].pop(key, None)
+            db["policies"] = [x for x in db["policies"]
+                              if x["item_id"] != item_id or x["location_id"] in wanted]
+            for loc in wanted:
+                InventoryStore._assign(db, item_id, loc)
+            return True
         if operation == "set_item_location":
             item_id, location_id = p["item_id"], p["location_id"]
             if item_id not in {x["id"] for x in db["items"]} or location_id not in {x["id"] for x in db["locations"]}:
