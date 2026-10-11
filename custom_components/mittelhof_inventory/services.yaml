@@ -39,6 +39,12 @@ create_item:
     category:
       name: Artikelkategorie
       selector: {text: {}}
+    manufacturer:
+      name: Hersteller (optional)
+      selector: {text: {}}
+    product_name:
+      name: Genaue Produktbezeichnung / Modell (optional)
+      selector: {text: {}}
     name:
       name: Artikelname
       required: true
@@ -145,3 +151,20 @@ set_item_location:
     assigned:
       required: true
       selector: {boolean: {}}
+
+update_item:
+  name: Artikeldetails aktualisieren
+  description: Ändert den Artikelnamen, die Einheit, den Hersteller und die Produktbezeichnung, nicht die automatisch vergebene Artikelnummer.
+  fields:
+    item_id:
+      required: true
+      selector: {text: {}}
+    name:
+      required: true
+      selector: {text: {}}
+    unit:
+      selector: {text: {}}
+    manufacturer:
+      selector: {text: {}}
+    product_name:
+      selector: {text: {}}
