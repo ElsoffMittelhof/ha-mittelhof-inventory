@@ -16,8 +16,23 @@ PLATFORMS = ["sensor"]
 LOCATION_SCHEMA = vol.Schema({vol.Required("code"): cv.string, vol.Required("name"): cv.string})
 ITEM_SCHEMA = vol.Schema({vol.Required("sku"): cv.string, vol.Required("name"): cv.string, vol.Optional("unit", default="Stück"): cv.string})
 POLICY_SCHEMA = vol.Schema({vol.Required("item_id"): cv.string, vol.Required("location_id"): cv.string, vol.Required("min_quantity"): vol.All(vol.Coerce(int), vol.Range(min=0)), vol.Required("target_quantity"): vol.All(vol.Coerce(int), vol.Range(min=0)), vol.Optional("reorder_multiple", default=1): vol.All(vol.Coerce(int), vol.Range(min=1))})
+COUNT_SCHEMA = vol.Schema({
+    vol.Required("item_id"): cv.string,
+    vol.Required("location_id"): cv.string,
+    vol.Required("quantity"): vol.All(vol.Coerce(int), vol.Range(min=0, max=1000000)),
+    vol.Required("expected_quantity"): vol.All(vol.Coerce(int), vol.Range(min=0, max=1000000)),
+    vol.Optional("idempotency_key"): cv.string,
+    vol.Optional("note", default=""): cv.string,
+})
+DELETE_ITEM_SCHEMA = vol.Schema({
+    vol.Required("item_id"): cv.string,
+    vol.Required("confirmation"): cv.string,
+})
+RESET_STOCK_SCHEMA = vol.Schema({
+    vol.Required("confirmation"): cv.string,
+})
 TRANSACTION_SCHEMA = vol.Schema({vol.Required("kind"): vol.In(["receipt", "consume", "transfer", "adjustment_in", "adjustment_out"]), vol.Required("item_id"): cv.string, vol.Optional("from_location_id"): cv.string, vol.Optional("to_location_id"): cv.string, vol.Required("quantity"): vol.All(vol.Coerce(int), vol.Range(min=1, max=1000000)), vol.Optional("note", default=""): cv.string, vol.Optional("idempotency_key"): cv.string})
-SCHEMAS = {"create_item": ITEM_SCHEMA, "create_location": LOCATION_SCHEMA, "set_stock_policy": POLICY_SCHEMA, "book_transaction": TRANSACTION_SCHEMA}
+SCHEMAS = {"create_item": ITEM_SCHEMA, "create_location": LOCATION_SCHEMA, "set_stock_policy": POLICY_SCHEMA, "book_transaction": TRANSACTION_SCHEMA, "set_count": COUNT_SCHEMA, "delete_item": DELETE_ITEM_SCHEMA, "reset_stock": RESET_STOCK_SCHEMA}
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = InventoryStore(hass)
@@ -32,6 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["_frontend_registered"] = True
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    admin_actions = {"set_count", "delete_item", "reset_stock"}
     for name, schema in SCHEMAS.items():
         if hass.services.has_service(DOMAIN, name):
             continue
@@ -39,7 +55,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             active = [v for v in hass.data.get(DOMAIN, {}).values() if isinstance(v, InventoryStore)]
             if len(active) != 1:
                 raise HomeAssistantError("Genau eine Mittelhof-Inventarinstanz wird benötigt")
+            if action in admin_actions:
+                user_id = call.context.user_id
+                user = await hass.auth.async_get_user(user_id) if user_id else None
+                if user is None or not user.is_admin:
+                    raise HomeAssistantError("Aktion nur für angemeldete Administratoren erlaubt")
             payload = dict(call.data)
+            payload["actor"] = call.context.user_id
+            if action in ("book_transaction", "set_count"):
+                payload.setdefault("idempotency_key", str(uuid.uuid4()))
             if action == "book_transaction":
                 payload.setdefault("idempotency_key", str(uuid.uuid4()))
                 payload.setdefault("from_location_id", None)
