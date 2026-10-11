@@ -1,5 +1,17 @@
 # Mittelhof Inventar (Home Assistant / HACS)
 
+## v1.0.2 – Standortbezogene Bestandsübersicht und einfachere Löschdialoge
+
+- **Übersicht neu aufgebaut:** Mehrfachauswahl der Standorte (Checkboxen), Schaltflächen *Alle Standorte* und *Auswahl aufheben*. Je gewähltem Standort werden nur seine **aktiven Inventurbereiche** und deren **dort zugeordnete Artikel** angezeigt, mit Artikelnummer, Name, Einheit, tatsächlichem Buchbestand und Inventurstatus. Artikel ohne Inventurbereich werden in dieser Übersicht **nicht** gelistet; sie bleiben im Artikelstamm erhalten und können später einem Bereich zugeordnet werden.
+- **Gezählt 0 / ungeprüft / noch nicht gezählt** bleiben unterschieden; Bestandssummen und Positionszähler werden ausschließlich für die gerade gewählten Standorte und Inventurbereiche berechnet. Inaktive Bereiche und archivierte Standorte erscheinen nicht. Es werden **keine Bestände dupliziert oder verändert**.
+- **Löschen vereinfacht:** Artikel, Gesamtbestand, Kategorien, Inventurbereiche und Standorte benötigen nun einen einzelnen klar formulierten Bestätigungsdialog. Die Eingabe von `DELETE_CATEGORY:...`, `DELETE_LOCATION:...` usw. in ein Textfeld entfällt. Die Browserkarte erstellt den bisherigen Backend-Bestätigungscode intern erst **nach Zustimmung**. Alle administrativen Rechteprüfungen und Regeln (z. B. Standort nur ohne positiven Bestand) gelten weiterhin.
+- **Inventar-Kennzahlen:** In der privaten Dashboarddatei `dashboards/inventar.yaml` besitzen die Kennzahlzeilen jetzt kurze Anzeige-Namen wie `Artikel`, `Standorte`, `Inventurbereiche` statt des langen automatisch gebildeten Präfixes. **Sensor-Entity-IDs bleiben identisch**, bestehende Automationen funktionieren unverändert.
+- Automatische Tests für Mehrfachauswahl, Zuordnung `Artikel × Standort × Inventurbereich`, ungezählte oder als Null gezählte Artikel, nicht aktive Bereiche sowie Dialog-Akzeptanz/Ablehnung wurden ergänzt.
+
+**Upgrade:** HACS `v1.0.2` installieren, Home Assistant neu starten, genau eine Ressource
+`/mittelhof_inventory/frontend/mittelhof-inventory-card.js?v=1.0.2` verwenden und die **vollständige neue private** `dashboards/inventar.yaml` nach Home Assistant übernehmen (anders als bei v1.0.1 ist die YAML diesmal geändert). HA-App/Browser anschließend vollständig neu laden. Vorher Backup erstellen. Das Hauptdashboard mit fünf Views und der Smoobu-Wäscheworkflow bleiben unverändert.
+
+
 ## v1.0.1 – Dashboard-Konfigurationsfehler behoben
 
 **Bugfix für die Verwaltungsansicht von v1.0.0.** Bei der Umstellung der QR-Druckfunktion auf Inventurbereiche wurde das Eingabefeld `#base` aus der alten Artikelverwaltung entfernt. Ihr JavaScript griff beim Rendern jedoch weiterhin darauf zu (`this.$("base").value=…`), was einen Fehler auslöste und die zweite Karte unter `Verwaltung` als „Konfigurationsfehler“ erscheinen ließ. Der überholte Zugriff wurde entfernt. Die neuen Inventurbereichs-/Kategorie-Funktionen der ersten Verwaltungskarte bleiben erhalten.
