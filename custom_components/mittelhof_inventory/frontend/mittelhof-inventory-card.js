@@ -213,7 +213,7 @@ class InventoryCapture extends InventoryBase {
       + '<div id="src-wrap" hidden><label>Von Standort<select id="src"></select></label></div>'
       + '<div id="dest-wrap" hidden><label>Nach Standort<select id="dest"></select></label></div></div>'
       + '<label id="quantity-label">Gezählter Istbestand (absolut)<input id="quantity" type="number" min="0" step="1" placeholder="Noch ungezählt"></label>'
-      + '<div id="existing" class="hint"></div>'
+      + '<div id="existing" class="hint"></div><div id="delta" class="hint"></div>'
       + '<label>Bemerkung (optional)<input id="note" maxlength="180"></label>'
       + '<button id="submit">Bestand speichern</button> <button id="scan" type="button">QR-Code scannen</button>'
       + '<label>Alternativ Kamera-Foto oder QR-Bild auswählen<input id="qr-file" type="file" accept="image/*" capture="environment"></label>'
@@ -222,6 +222,7 @@ class InventoryCapture extends InventoryBase {
       + '<div id="status" class="status" role="status"></div></div></ha-card><style>'+css+'</style>';
     this.$("kind").onchange=()=>this.updateMode();
     this.$("item").onchange=()=>this.updateCurrent();
+    this.$("quantity").oninput=()=>this.updateDelta();
     this.$("loc").onchange=()=>this.updateCurrent();
     this.$("submit").onclick=()=>this.submit();
     this.$("scan").onclick=()=>this.scan();
@@ -284,6 +285,20 @@ class InventoryCapture extends InventoryBase {
         (rec?.counted?"Bereits gezählt":"Noch nicht inventarisiert (Istwert bitte eingeben)") :
         "Achtung: Zugang erhöht den Gesamtbestand, Umlagerung nicht.";
     this.$("submit").disabled=!!id&&!!loc&&!assigned&&kind!=="transfer";
+    this.updateDelta();
+  }
+  updateDelta(){
+    const kind=this.$("kind").value;
+    if(kind!=="set_count"){this.$("delta").textContent="";return;}
+    const {stock}=this.data;
+    const rec=stock.find(x=>x.item_id===this.$("item").value&&x.location_id===this.$("loc").value);
+    const actual=this.$("quantity").value.trim();
+    if(!actual){this.$("delta").textContent="Gezählte Menge eingeben.";return;}
+    const value=Number(actual),old=rec?.quantity??0;
+    if(!Number.isSafeInteger(value)||value<0){this.$("delta").textContent="Ungültige Menge";return;}
+    const diff=value-old;
+    this.$("delta").textContent="Bestandsdifferenz: "+(diff>0?"+":"")+diff+
+      " · Neu: "+value+" · Bisher: "+old;
   }
   async submit() {
     const type=this.$("kind").value,id=this.$("item").value,loc=this.$("loc").value;
