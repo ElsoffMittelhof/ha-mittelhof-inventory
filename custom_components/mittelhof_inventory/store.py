@@ -58,17 +58,18 @@ class InventoryStore:
         db.setdefault("locations", [])
         db.setdefault("transactions", [])
         db.setdefault("audit", [])
+        initialize_categories = "categories" not in db
         db.setdefault("categories", [])
         db.setdefault("areas", [])
         db.setdefault("group_batches", [])
-        defaults=("Allgemein", "Geschirr", "Verbrauchsmaterial", "Reinigungsmittel",
-                  "Werkzeug", "Gartengerät")
-        names=list(defaults)
-        names.extend(x.get("category","Allgemein").strip() or "Allgemein"
-                     for x in db["items"])
-        # Idempotently migrate the historical free-text category names to stable IDs.
-        for name in dict.fromkeys(names):
-            if not any(c["name"].casefold()==name.casefold() for c in db["categories"]):
+        if initialize_categories:
+            defaults=("Allgemein", "Geschirr", "Verbrauchsmaterial",
+                      "Reinigungsmittel", "Werkzeug", "Gartengerät")
+            names=list(defaults)
+            names.extend(x.get("category","Allgemein").strip() or "Allgemein"
+                         for x in db["items"])
+            # Seed only once; deleted categories must stay deleted.
+            for name in dict.fromkeys(names):
                 db["categories"].append({"id":str(uuid4()),"name":name,"active":True})
         for loc in db["locations"]:
             loc.setdefault("active",True)
