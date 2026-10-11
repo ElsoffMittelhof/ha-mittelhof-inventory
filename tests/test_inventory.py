@@ -25,10 +25,12 @@ LOC2 = {"id": "l14", "code": "14", "name": "Haus 14"}
 
 
 def fresh():
-    return {"items": [dict(ITEM)], "locations": [dict(LOC1), dict(LOC2)],
+    db = {"items": [dict(ITEM)], "locations": [dict(LOC1), dict(LOC2)],
             "stock": {}, "counted": {}, "policies": [], "transactions": [], "audit": [],
             "item_locations": {"i1|l13": {"id": "a13", "item_id": "i1", "location_id": "l13"},
                                "i1|l14": {"id": "a14", "item_id": "i1", "location_id": "l14"}}}
+    mod.InventoryStore._migrate(db)
+    return db
 
 
 class InventoryTests(unittest.TestCase):
