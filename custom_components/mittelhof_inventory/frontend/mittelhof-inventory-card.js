@@ -1,7 +1,7 @@
 import "./vendor/qrgen.js";
 import "./vendor/jsQR.js";
 
-/* Mittelhof Inventar 0.9.0 – local-only HA cards. No remote QR endpoints. */
+/* Mittelhof Inventar 0.9.1 – local-only HA cards. No remote QR endpoints. */
 const DOMAIN = "mittelhof_inventory";
 const DEFAULT_CAPTURE_PATH = "/inventar-dashboard/erfassung";
 const css = `
@@ -115,26 +115,54 @@ class InventoryBase extends HTMLElement {
     return Array.isArray(st?.attributes?.records) ? st.attributes.records : [];
   }
   get data() {
-    return {
+    return this._verifiedData || {
       items: this.records("artikel", "items_entity"),
       locations: this.records("standorte", "locations_entity"),
       stock: this.records("bestandspositionen", "stock_entity"),
       suggestions: this.records("fehlbestande", "suggestions_entity"),
     };
   }
-  async action(service, payload, success) {
-    const status = this.$("status");
+  async action(service, payload, success, statusId="status") {
+    const status = this.$(statusId) || this.$("status");
     const button = this.$("submit");
-    if (this._busy) return;
+    if (this._busy) return false;
     this._busy = true;
     if (button) button.disabled = true;
-    if (status) status.textContent = "Speichere …";
+    if (status) {
+      status.textContent = "Speichern läuft …";
+      status.style.color = "var(--primary-text-color)";
+    }
     try {
-      await this._hass.callService(DOMAIN, service, payload);
-      if (status) status.textContent = "Gespeichert.";
-      if (success) success();
+      const reply = await this._hass.connection.sendMessagePromise({
+        type: "mittelhof_inventory/execute",
+        action: service,
+        data: payload,
+      });
+      if (!reply?.saved) throw Error("Keine bestätigte Speicherung vom Inventarserver");
+      // Fetch the authoritative in-memory inventory after the storage write.
+      const fresh = await this._hass.connection.sendMessagePromise({
+        type: "mittelhof_inventory/read",
+      });
+      if (!fresh || !Array.isArray(fresh.items)) throw Error("Gespeichert, aber der neue Bestand konnte nicht gelesen werden");
+      this._verifiedData = fresh;
+      if (success) success(reply, fresh);
+      this.update();
+      const msg = service === "set_count"
+        ? "Gespeichert und geprüft: " + reply.stored_quantity + " Stück. Buchungs-ID: " +
+          (reply.result?.id || "nicht verfügbar")
+        : service === "set_stock_policy"
+          ? "Regel gespeichert und geprüft: Minimum " + reply.policy?.min_quantity +
+            ", Soll " + reply.policy?.target_quantity + "."
+          : "Gespeichert und durch Rücklesen bestätigt.";
+      if (status) { status.textContent = msg; status.style.color = "var(--success-color, #27834a)"; }
+      return true;
     } catch (err) {
-      if (status) status.textContent = "Fehler: " + (err?.message || String(err));
+      if (status) {
+        status.textContent = "Speichern nicht bestätigt: " + (err?.message || String(err)) +
+          ". Bitte vor erneutem Versuch die Bestandsübersicht prüfen.";
+        status.style.color = "var(--error-color, #b32d2e)";
+      }
+      return false;
     } finally {
       this._busy = false;
       if (button) button.disabled = false;
@@ -215,11 +243,13 @@ class InventoryCapture extends InventoryBase {
       + '<label id="quantity-label">Gezählter Istbestand (absolut)<input id="quantity" type="number" min="0" step="1" placeholder="Noch ungezählt"></label>'
       + '<div id="existing" class="hint"></div><div id="delta" class="hint"></div>'
       + '<label>Bemerkung (optional)<input id="note" maxlength="180"></label>'
-      + '<button id="submit">Bestand speichern</button> <button id="scan" type="button">QR-Code scannen</button>'
+      + '<button id="submit">Bestand speichern</button>'
+      + '<div id="status" class="status" role="status" aria-live="polite"></div>'
+      + '<button id="scan" type="button">QR-Code scannen</button>'
       + '<label>Alternativ Kamera-Foto oder QR-Bild auswählen<input id="qr-file" type="file" accept="image/*" capture="environment"></label>'
       + '<div id="camera-box" hidden><video id="camera" autoplay muted playsinline style="width:100%;max-height:240px"></video>'
       + '<button id="stop" type="button">Kamera schließen</button></div>'
-      + '<div id="status" class="status" role="status"></div></div></ha-card><style>'+css+'</style>';
+      + '<div id="scan-status" class="status" role="status"></div></div></ha-card><style>'+css+'</style>';
     this.$("kind").onchange=()=>this.updateMode();
     this.$("item").onchange=()=>this.updateCurrent();
     this.$("quantity").oninput=()=>this.updateDelta();
@@ -346,7 +376,7 @@ class InventoryCapture extends InventoryBase {
       try{window.sessionStorage.setItem("mittelhof_inventory_location",locId);}catch(e){}
     }
 
-    this._quantitySource="";this.updateCurrent();this.$("status").textContent="QR-Code erkannt. Menge eingeben und bestätigen.";
+    this._quantitySource="";this.updateCurrent();this.$("scan-status").textContent="QR-Code erkannt. Menge eingeben und bestätigen.";
   }
   readQRFromCanvas(canvas) {
     if(!window.jsQR) throw Error("Lokaler QR-Decoder nicht verfügbar");
@@ -369,12 +399,12 @@ class InventoryCapture extends InventoryBase {
       const text=this.readQRFromCanvas(canvas);
       if(!text)throw Error("Kein QR-Code gefunden. Foto näher und schärfer aufnehmen.");
       this.applyQr(text);
-    } catch(e){this.$("status").textContent="QR-Fehler: "+(e?.message||e);}
+    } catch(e){this.$("scan-status").textContent="QR-Fehler: "+(e?.message||e);}
     finally {URL.revokeObjectURL(url);this.$("qr-file").value="";}
   }
   async scan(){
     if(!navigator.mediaDevices?.getUserMedia){
-      this.$("status").textContent="Live-Kamera nicht verfügbar. Bitte QR-Foto aufnehmen oder iPhone-Kamera benutzen.";
+      this.$("scan-status").textContent="Live-Kamera in dieser App nicht verfügbar. Fotoauswahl wird geöffnet.";this.$("qr-file").click();
       return;
     }
     try{
@@ -398,12 +428,12 @@ class InventoryCapture extends InventoryBase {
               this.stopCamera();return;
             }
           }
-        }catch(e){this.$("status").textContent="QR-Fehler: "+(e?.message||e);this.stopCamera();return;}
+        }catch(e){this.$("scan-status").textContent="QR-Fehler: "+(e?.message||e);this.stopCamera();return;}
         if(this._stream) this._frame=requestAnimationFrame(loop);
       };
       this._frame=requestAnimationFrame(loop);
     }catch(e){
-      this.$("status").textContent="Kamera nicht verfügbar: "+(e?.message||e)+". Alternativ QR-Foto auswählen.";
+      this.$("scan-status").textContent="Live-Kamera nicht verfügbar: "+(e?.message||e)+". Fotoauswahl öffnen.";this.$("qr-file").click();
       this.stopCamera();
     }
   }
@@ -442,7 +472,8 @@ class InventoryAdmin extends InventoryBase {
       + '<label>Artikel<select id="item"></select></label><label>Standort<select id="loc"></select></label>'
       + '<label>Minimum<input id="min" type="number" min="0" value="2"></label>'
       + '<label>Soll<input id="target" type="number" min="0" value="10"></label></div>'
-      + '<button id="policy">Regel speichern</button></section>'
+      + '<button id="policy">Regel speichern</button>'
+      + '<div id="policy-status" class="status" role="status" aria-live="polite"></div></section>'
       + '<section><h3>QR-Etiketten drucken</h3><div class="hint">'
       + 'QR-Link öffnet die Erfassung. Keine Zugangsdaten enthalten. A4-Vorlage für Avery L4773 (63,5 × 33,9 mm; 24 Etiketten/Bogen). Mit 100 % und ohne Skalierung drucken.'
       + '</div><label>Erreichbare Home-Assistant-Adresse'
@@ -535,7 +566,7 @@ class InventoryAdmin extends InventoryBase {
       !Number.isSafeInteger(target_quantity)||target_quantity<min_quantity){
       this.$("status").textContent="Artikel, Standort und gültige Mindest-/Sollwerte erforderlich.";return;
     }
-    this.action("set_stock_policy",{item_id,location_id,min_quantity,target_quantity,reorder_multiple:1});
+    this.action("set_stock_policy",{item_id,location_id,min_quantity,target_quantity,reorder_multiple:1},null,"policy-status");
   }
   labels(){
     try{
