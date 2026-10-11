@@ -3,7 +3,7 @@ import "./vendor/qrgen.js";
 /* Mittelhof Inventar 0.8.0 – local-only HA cards. No remote QR endpoints. */
 const DOMAIN = "mittelhof_inventory";
 const DEFAULT_CAPTURE_PATH = "/inventar-dashboard/erfassung";
-const css = \`
+const css = `
   .body { padding: 0 16px 16px; }
   section { padding: 12px 0; border-top: 1px solid var(--divider-color); }
   label { display: block; margin: 8px 0 4px; }
@@ -21,7 +21,7 @@ const css = \`
   td.num,th.num { text-align: right; }
   .scroll { overflow-x: auto; }
   .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap: 12px; }
-\`;
+`;
 
 function el(tag, text, parent, cls = "") {
   const node = document.createElement(tag);
