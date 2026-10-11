@@ -79,6 +79,40 @@ async function main(){
   assert.ok(results.includes("mittelhof-inventory-structure-admin"));
   assert.ok(results.includes("mittelhof-inventory-area-capture"));
   assert.ok(results.includes("mittelhof-inventory-admin"));
-  console.log("All dashboard card initialization checks passed:",results.join(", "));
+  // Destructive actions need only the platform confirmation dialog, but must
+  // still send the exact admin-only confirmation token expected by the backend.
+  const messages=[],calls=[];
+  win.confirm=(message)=>{messages.push(message);return true;};
+  const master = new (cards.get("mittelhof-inventory-structure-admin"))();
+  master._sourceData={
+    ...blank,
+    categories:[{id:"cat",name:"Besteck"}],
+    areas:[{id:"area",name:"Besteckschublade",location_id:"13"}],
+    locations:[{id:"13",name:"Haus 13",code:"13"}],
+    stock:[]
+  };
+  master.$=(id)=>({value:({
+    category:"cat",area:"area","delete-location":"13"
+  })[id]||"",textContent:""});
+  master.action=(name,payload)=>{calls.push({name,payload});return Promise.resolve(true);};
+  master.deleteCategory();master.deleteArea();master.deleteLocation();
+  assert.equal(messages.length,3);
+  assert.deepEqual(calls.map(x=>x.name),["delete_category","delete_area","delete_location"]);
+  assert.equal(calls[0].payload.confirmation,"DELETE_CATEGORY:Besteck");
+  assert.equal(calls[1].payload.confirmation,"DELETE_AREA:Besteckschublade");
+  assert.equal(calls[2].payload.confirmation,"DELETE_LOCATION:13");
+
+  const legacy = new (cards.get("mittelhof-inventory-admin"))();
+  legacy._sourceData={...blank,items:[{id:"item",sku:"A-000001",name:"Gabel"}]};
+  legacy.$=(id)=>({value:id==="delete-item"?"item":""});
+  legacy.action=(name,payload)=>{calls.push({name,payload});return Promise.resolve(true);};
+  await legacy.removeItem();
+  await legacy.resetStock();
+  assert.equal(calls[3].payload.confirmation,"DELETE:A-000001");
+  assert.equal(calls[4].payload.confirmation,"BESTAND LOESCHEN");
+  win.confirm=()=>false;
+  master.deleteCategory();
+  assert.equal(calls.length,5,"Canceling the dialog must not submit deletion");
+  console.log("All dashboard card initialization and confirmation dialog checks passed:",results.join(", "));
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
