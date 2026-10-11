@@ -863,8 +863,12 @@ class InventoryStructureAdmin extends InventoryBase {
     refill(this.$("delete-location"),locations,"name");
     refill(this.$("qr-filter"),[{id:"",name:"Alle Standorte"},...locations],"name");
     refill(this.$("area"),[{id:"",name:"— Neuen Bereich anlegen —"},...areas],"name");
-    this.$("category-name").value=
-      categories.find(x=>x.id===this.$("category").value)?.name||"";
+    const categoryId=this.$("category").value;
+    if(this._loadedCategoryId!==categoryId){
+      this._loadedCategoryId=categoryId;
+      this.$("category-name").value=
+        categories.find(x=>x.id===categoryId)?.name||"";
+    }
     this.loadArea();
     this.showLocationQty();
   }
@@ -914,7 +918,7 @@ class InventoryStructureAdmin extends InventoryBase {
   editCategory(){
     const category_id=this.$("category").value,name=this.$("category-name").value.trim();
     if(!category_id||!name){this.$("category-status").textContent="Kategorie und Name fehlen.";return;}
-    this.action("update_category",{category_id,name,active:true},null,"category-status");
+    this.action("update_category",{category_id,name,active:true},()=>{this._loadedCategoryId=null;},"category-status");
   }
   deleteCategory(){
     const c=this.data.categories.find(x=>x.id===this.$("category").value);
