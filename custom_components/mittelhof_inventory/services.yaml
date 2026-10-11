@@ -31,11 +31,13 @@ book_transaction:
       selector: {text: {}}
 create_item:
   name: Artikel anlegen
-  description: Legt einen Inventarartikel an.
+  description: Legt einen Artikel an und vergibt die eindeutige Artikelnummer automatisch.
   fields:
-    sku:
-      name: Artikelnummer
-      required: true
+    location_ids:
+      name: Zuordnung zu Standorten (IDs)
+      selector: {object: {}}
+    category:
+      name: Artikelkategorie
       selector: {text: {}}
     name:
       name: Artikelname
@@ -120,3 +122,26 @@ reset_stock:
       name: Bestätigung BESTAND LOESCHEN
       required: true
       selector: {text: {}}
+
+set_item_locations:
+  name: Artikelstandorte zuordnen
+  description: Setzt die aktiven Standorte eines Artikels atomar. Standorte mit vorhandenem Bestand können nicht entfernt werden.
+  fields:
+    item_id:
+      required: true
+      selector: {text: {}}
+    location_ids:
+      required: true
+      selector: {object: {}}
+set_item_location:
+  name: Einzelnen Artikelstandort zuordnen
+  fields:
+    item_id:
+      required: true
+      selector: {text: {}}
+    location_id:
+      required: true
+      selector: {text: {}}
+    assigned:
+      required: true
+      selector: {boolean: {}}
