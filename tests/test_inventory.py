@@ -181,5 +181,48 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(db["stock"],{})
 
 
+    def test_manufacturer_product_name_can_be_added_and_edited(self):
+        db=fresh()
+        item=mod.InventoryStore._apply(db, "create_item", {
+            "name":"Akkuschrauber","unit":"Stück",
+            "manufacturer":"Bosch", "product_name":"GSB 18V-55",
+            "location_ids":["l13"]})
+        self.assertEqual(item["manufacturer"],"Bosch")
+        self.assertEqual(item["product_name"],"GSB 18V-55")
+        original_sku=item["sku"]
+        updated=mod.InventoryStore._apply(db,"update_item",{
+            "item_id":item["id"], "name":"Akkuschrauber 18V",
+            "unit":"Stück","manufacturer":"Makita", "product_name":"DHP484"})
+        self.assertEqual(updated["sku"],original_sku)
+        self.assertEqual(updated["product_name"],"DHP484")
+        self.assertEqual(updated["manufacturer"],"Makita")
+        self.assertEqual(db["audit"][-1]["action"],"update_item")
+
+    def test_extra_locations_and_duplicate_protection(self):
+        db=fresh()
+        for code,name in [
+            ("GARAGE1","Garage 1"),("GARAGE2","Garage 2"),
+            ("CARPORT","Carport"),("WERKSTATT","Werkstatt"),
+            ("STALL","Stall"),("GARTENHAUS","Gartenhaus"),
+            ("WASCHKUECHE","Waschküche"),("DACHBODEN","Dachboden")
+        ]:
+            new=mod.InventoryStore._apply(db,"create_location",{"code":code,"name":name})
+            self.assertEqual(new["code"],code)
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"create_location",{"code":"WASCH","name":"Waschküche"})
+        with self.assertRaises(mod.InventoryError):
+            mod.InventoryStore._apply(db,"create_location",{"code":"garage1","name":"Andere Garage"})
+
+    def test_policy_confirmation_snapshot_contains_saved_values(self):
+        db=fresh()
+        mod.InventoryStore._apply(db,"set_stock_policy",{
+            "item_id":"i1","location_id":"l13","min_quantity":5,
+            "target_quantity":12,"reorder_multiple":2})
+        model=mod.InventoryStore.__new__(mod.InventoryStore)
+        model.data=db
+        self.assertEqual(model.snapshot()["policies"][0]["target_quantity"],12)
+
+
+
 if __name__ == "__main__":
     unittest.main()
