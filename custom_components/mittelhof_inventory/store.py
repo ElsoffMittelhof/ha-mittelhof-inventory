@@ -429,6 +429,7 @@ class InventoryStore:
             db["stock"].clear()
             db["counted"].clear()
             db["transactions"].clear()
+            db["group_batches"].clear()
             db["audit"].append({"id": str(uuid4()), "at": now(), "action": "reset_stock",
                                 "affected_positions": before, "actor": p.get("actor")})
             return True
