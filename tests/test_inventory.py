@@ -223,6 +223,41 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(model.snapshot()["policies"][0]["target_quantity"],12)
 
 
+    def test_persisted_stocktake_roundtrip(self):
+        import asyncio
+        import copy
+        class FakeStore:
+            persisted=None
+            async def async_load(self):
+                return copy.deepcopy(self.persisted)
+            async def async_save(self, state):
+                self.persisted=copy.deepcopy(state)
+        async def exercise():
+            fake=FakeStore()
+            fake.persisted=fresh()
+            first=mod.InventoryStore.__new__(mod.InventoryStore)
+            first._store=fake
+            first._lock=asyncio.Lock()
+            first.data={}
+            await first.load()
+            result=await first.mutate("set_count",{
+                "item_id":"i1","location_id":"l13",
+                "quantity":8,"expected_quantity":0,
+                "idempotency_key":"persist-8","actor":"admin"})
+            self.assertEqual(result["quantity"],8)
+            self.assertEqual(fake.persisted["stock"]["i1|l13"],8)
+            reloaded=mod.InventoryStore.__new__(mod.InventoryStore)
+            reloaded._store=fake
+            reloaded._lock=asyncio.Lock()
+            reloaded.data={}
+            await reloaded.load()
+            rows=reloaded.snapshot()["stock"]
+            self.assertEqual(rows[0]["quantity"],8)
+            self.assertTrue(rows[0]["counted"])
+            self.assertEqual(len(reloaded.data["transactions"]),1)
+        asyncio.run(exercise())
+
+
 
 if __name__ == "__main__":
     unittest.main()
