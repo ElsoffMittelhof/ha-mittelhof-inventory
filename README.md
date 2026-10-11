@@ -1,5 +1,37 @@
 # Mittelhof Inventar (Home Assistant / HACS)
 
+## v1.0.0 – QR je Inventurbereich, Kategorien und Standort löschen
+
+### Alltag / Inventur
+
+- Weiterhin **ein Artikelstamm** mit automatischer SKU, Hersteller/Modell (optional) und bestehenden Bestandsbuchungen nach **Artikel × Hauptstandort**.
+- Neue **frei verwaltbare Kategorien** wie Besteck, Geschirr, Reinigungsmittel. Kategorien werden einmalig aus bestehenden Werten migriert, erhalten stabile IDs, können angelegt, umbenannt und (wenn ungenutzt) gelöscht werden.
+- Neue **Inventurbereiche** als Gruppen je Standort und Kategorie, z. B. *Mittelhof Nr. 13 → Besteckschublade*, welche die ausgewählten Artikel Gabel/Messer/Löffel enthält. **Jeder Artikel darf an einem Standort nur einem aktiven Inventurbereich zugeordnet sein**, damit keine doppelten Bestände entstehen.
+- **Ein einziger QR-Code pro Inventurbereich**, druckbar als 24er-A4-Etikettenbogen. Keine QR-Etiketten mehr für jedes einzelne Besteckteil. Die Codes führen zur URL `/inventar-dashboard/erfassung?inventory_area=<stabile-id>`, enthalten keine Mengen, Passwörter oder personenbezogenen Daten.
+- In *Erfassung → Inventurbereiche* nach Scan alle zugeordneten Artikel anzeigen; Buchmengen als Ausgangswerte, noch ungezählte Mengen leer, Änderungen/Inventurdifferenzen prüfen. Ein erster Klick prüft und zeigt Zusammenfassung, zweiter speichert **alle angezeigten ausgefüllten Positionen in genau einer atomaren Aktion**. Bei gleichzeitiger Änderung einer Position werden **alle** Buchungen abgelehnt, sodass keine Teilinventur entsteht.
+- In der iPhone HA-App ohne Live-Kamera den QR über die **normale iPhone-Kamera** öffnen oder über *Bereichs-QR über Foto scannen* als Foto einlesen; jsQR-Decoder lokal, keine Cloud.
+
+### Verwaltung und Standortentfernung
+
+- Unter **Verwaltung → Kategorien, Inventurbereiche und Standorte** neue Kategorien hinzufügen, umbenennen und unbenutzte Kategorien nach expliziter Textbestätigung löschen.
+- Inventurbereiche benennen, einem aktiven Standort und einer Kategorie zuordnen, passende Artikel per Checkbox auswählen; nachträglich bearbeiten und deaktivieren. Ein QR-Aufkleber je Schublade, Regal oder Schrank.
+- Bestehende **Standorte frei anlegen** (Haus 13/14/15, Garage 1/2, Werkstatt, Stall, Gartenhaus, Waschküche, Dachboden, Carport usw.). Auch der bisherige Standort **Lager** kann entfernt werden – allerdings **nur, wenn dort kein positiver Bestand mehr gebucht ist**. Bestände zuvor umlagern oder nach physischer Prüfung über eine nachvollziehbare Inventurkorrektur ausbuchen.
+- Die Standortaktion `delete_location` verlangt die wortgenaue Bestätigung `DELETE_LOCATION:<Kürzel>` und ist nur als HA-Administrator möglich. Technisch wird der Standort **deaktiviert** und aus Auswahl/Übersicht ausgeblendet, historische Transaktionen und IDs bleiben zu Prüfzwecken gespeichert. Leere Zuordnungen, Regeln und betroffene Inventurbereiche werden entfernt/deaktiviert. Ein beim Start automatisch angelegter Standort `LAGER` wird nach der Deaktivierung **nicht neu erzeugt**.
+
+### Installation von v1.0.0
+
+1. Vorher Home-Assistant-Vollbackup erstellen.
+2. HACS → Mittelhof Inventar auf **v1.0.0** aktualisieren, **Home Assistant neu starten**.
+3. Nur eine Dashboard-Ressource im Modultyp verwenden: `/mittelhof_inventory/frontend/mittelhof-inventory-card.js?v=1.0.0`.
+4. **Private Lovelace-YAML `dashboards/inventar.yaml` zusätzlich manuell aktualisieren.** HACS installiert keine privaten Dashboard-YAML-Dateien. Die neue Erfassungsansicht enthält zuerst die Bereichsinventur, darunter die bestehende Einzelbuchung; die Verwaltung enthält neu Kategorien/Bereiche/Standortentfernung und darunter Artikel-/Standortstamm. Das bisherige private Hauptdashboard mit fünf Views und die Smoobu-Wäscheverwaltung bleiben unverändert.
+5. Testlauf: als HA-Admin neue Kategorie `Besteck` anlegen, bestehende Gabel auf diese Kategorie ändern; weitere Messer/Löffel anlegen, Inventurbereich `Besteckschublade` Haus 13 anlegen, QR-Bogen drucken, iPhone-Kamera-Test durchführen und danach die Sammelzählung ausprobieren. **Live-iPhone- und HA-Drucktest wurde nicht vom Entwicklungssystem aus durchgeführt.**
+6. Vor Löschen von `Lager` sicherstellen, dass alle Bestände (auch aus Testbuchungen) auf die tatsächlichen Garagen/Waschküche/Stall/Gartenhaus umgebucht sind. Löschaktion zeigt Restbestandswarnung und blockiert bei Mengen größer als 0.
+
+### Backend und Migration
+
+Additive Schemaerweiterung der bestehenden `/config/.storage/mittelhof_inventory.data` mit `categories`, `areas` und `group_batches`. Jede Kategorie und jeder Inventurbereich besitzt eine stabile UUID; Namen können sich ändern, QR-Bereichslinks bleiben stabil. Archivierte Standorte behalten ihre UUID und ihre Historie. Atomic bulk count implementiert über den vorhandenen Store-Lock samt Idempotenzschlüssel, erwarteter Buchmenge und `expected_counted`-Prüfung; bei Konflikt unveränderte Bestände. `mittelhof_inventory/execute` und `mittelhof_inventory/read` bleiben auf HA-Admins beschränkt. Zurücksetzen des Gesamtbestands löscht weiterhin nur Mengen und Bewegungen, **nicht** Stammdaten, Kategorien und Bereichszuordnungen.
+
+
 ## v0.9.1 – iPhone-Buchungen, Bestätigungen, Artikeldetails und weitere Standorte
 
 **Wichtiger Fehlerbehebungsstand für die Erstinventur:** In v0.9.0 wurde `crypto.randomUUID()` nach dem Bestätigungsdialog aufgerufen. Die API ist nur über HTTPS/andere sichere Browserkontexte verfügbar und kann in der Home-Assistant-iPhone-App über lokale HTTP-Adressen fehlen. Die neue Version erzeugt Idempotenzschlüssel stattdessen mit dem auch über lokales HTTP verfügbaren `crypto.getRandomValues()` (mit einer Notfall-Ausweichfunktion). Gleichzeitig liefert ein neu registrierter, nur für HA-Administratoren zugänglicher WebSocket-Buchungsweg nach der Store-Schreibaktion eine serverseitige Quittung und kann den aktuellen Stand erneut lesen. Damit kann die UI Fehler unmittelbar neben dem Buchungs- oder Regelbutton zeigen und nach bestätigter Speicherung explizit auf die neue Menge verweisen. Der Screenshot allein belegt **nicht**, dass `crypto.randomUUID()` die einzige Ursache war; reale iPhone-/HA-Tests stehen noch aus.
