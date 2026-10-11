@@ -401,9 +401,20 @@ class InventoryAdmin extends InventoryBase {
   render() {
     this.innerHTML='<ha-card header="Inventar-Verwaltung"><div class="body">'
       + '<section><h3>Artikel anlegen</h3><div class="row">'
-      + '<label>Artikelnummer<input id="sku" autocomplete="off"></label>'
-      + '<label>Bezeichnung<input id="name"></label><label>Einheit<input id="unit" value="Stück"></label></div>'
+      + '<label>Artikelnummer: wird automatisch vergeben</label>'
+      + '<label>Bezeichnung<input id="name"></label>'
+      + '<label>Einheit<input id="unit" value="Stück"></label>'
+      + '<label>Kategorie<select id="category"><option>Allgemein</option><option>Geschirr</option>'
+      + '<option>Verbrauchsmaterial</option><option>Reinigungsmittel</option>'
+      + '<option>Werkzeug</option><option>Gartengerät</option></select></label></div>'
+      + '<div class="hint">Artikel an diesen Standorten führen:</div>'
+      + '<div id="new-locations"></div>'
       + '<button id="additem">Artikel anlegen</button></section>'
+      + '<section><h3>Artikel-Standorte bearbeiten</h3>'
+      + '<label>Artikel<select id="assigned-item"></select></label>'
+      + '<div id="assignment-list"></div>'
+      + '<button id="save-assignment">Zuordnung speichern</button>'
+      + '<div class="hint">Standorte mit Bestand können nicht entfernt werden.</div></section>'
       + '<section><h3>Standort anlegen</h3><div class="row"><label>Kürzel<input id="code"></label>'
       + '<label>Name<input id="locname"></label></div><button id="addloc">Standort anlegen</button></section>'
       + '<section><h3>Mindest- und Sollbestand</h3><div class="row">'
@@ -415,8 +426,8 @@ class InventoryAdmin extends InventoryBase {
       + 'QR-Link öffnet die Erfassung. Keine Zugangsdaten enthalten. A4-Vorlage für Avery L4773 (63,5 × 33,9 mm; 24 Etiketten/Bogen). Mit 100 % und ohne Skalierung drucken.'
       + '</div><label>Erreichbare Home-Assistant-Adresse'
       + '<input id="base" placeholder="https://mein-home-assistant.example" /></label>'
-      + '<label>Etikettensatz<select id="group"><option value="locations">Standorte</option>'
-      + '<option value="items">Artikel</option></select></label>'
+      + '<label>Standortfilter<select id="group"><option value="">Alle Standorte</option></select></label>'
+      + '<div class="hint">Ein QR-Etikett pro aktiver Artikel-Standort-Kombination.</div>'
       + '<button id="print">QR-Etikettenbogen öffnen</button></section>'
       + '<section><h3>Testdaten löschen</h3>'
       + '<div class="hint">Nur Administratoren. Vorher HA-Backup erstellen. Löschen ist unwiderruflich.</div>'
@@ -429,23 +440,66 @@ class InventoryAdmin extends InventoryBase {
     this.$("additem").onclick=()=>this.createItem();
     this.$("addloc").onclick=()=>this.createLocation();
     this.$("policy").onclick=()=>this.policy();
+    this.$("assigned-item").onchange=()=>{this._editorSignature="";this.renderAssignments();};
+    this.$("save-assignment").onclick=()=>this.saveAssignments();
     this.$("print").onclick=()=>this.labels();
     this.$("delete").onclick=()=>this.removeItem();
     this.$("reset").onclick=()=>this.resetStock();
     this.$("base").value=window.location.origin;
   }
   update(){
-    if(!this._ready) return;
+    if(!this._ready)return;
     const {items,locations}=this.data;
     refill(this.$("item"),items,"name");
     refill(this.$("delete-item"),items,"name");
+    refill(this.$("assigned-item"),items,"name");
     refill(this.$("loc"),locations,"name");
+    refill(this.$("group"),[{id:"",name:"Alle Standorte"},...locations],"name");
+    const newLoc=this.$("new-locations");
+    const sig=locations.map(x=>x.id+":"+x.name).join("|");
+    if(this._newLocationSig!==sig){
+      this._newLocationSig=sig;newLoc.replaceChildren();
+      for(const loc of locations){
+        const label=el("label",null,newLoc);
+        const input=el("input",null,label);input.type="checkbox";
+        input.value=loc.id;input.style.width="auto";input.style.display="inline";
+        label.append(" "+loc.name);
+      }
+    }
+    this.renderAssignments();
+  }
+  renderAssignments(){
+    const {items,locations}=this.data;
+    const item=items.find(x=>x.id===this.$("assigned-item").value);
+    const sig=(item?.id||"")+":"+(item?.location_ids||[]).join("|")+":"+locations.map(x=>x.id).join("|");
+    if(sig===this._editorSignature)return;
+    this._editorSignature=sig;
+    const box=this.$("assignment-list");box.replaceChildren();
+    if(!item)return;
+    for(const loc of locations){
+      const label=el("label",null,box);
+      const input=el("input",null,label);input.type="checkbox";
+      input.value=loc.id;input.checked=(item.location_ids||[]).includes(loc.id);
+      input.style.width="auto";input.style.display="inline";
+      label.append(" "+loc.name);
+    }
+  }
+  saveAssignments(){
+    const item=this.$("assigned-item").value;
+    if(!item){this.$("status").textContent="Artikel auswählen.";return;}
+    const location_ids=[...this.$("assignment-list").querySelectorAll("input:checked")].map(x=>x.value);
+    this.action("set_item_locations",{item_id:item,location_ids});
   }
   createItem(){
-    const sku=this.$("sku").value.trim(),name=this.$("name").value.trim();
-    if(!sku||!name){this.$("status").textContent="Artikelnummer und Name angeben.";return;}
-    this.action("create_item",{sku,name,unit:this.$("unit").value.trim()||"Stück"},
-      ()=>{this.$("sku").value="";this.$("name").value="";});
+    const name=this.$("name").value.trim();
+    if(!name){this.$("status").textContent="Artikelname angeben.";return;}
+    const location_ids=[...this.$("new-locations").querySelectorAll("input:checked")].map(x=>x.value);
+    if(!location_ids.length){this.$("status").textContent="Mindestens einen Standort wählen.";return;}
+    this.action("create_item",{name,unit:this.$("unit").value.trim()||"Stück",
+      category:this.$("category").value,location_ids},()=>{
+        this.$("name").value="";
+        for(const cb of this.$("new-locations").querySelectorAll("input"))cb.checked=false;
+      });
   }
   createLocation(){
     const code=this.$("code").value.trim(),name=this.$("locname").value.trim();
@@ -463,19 +517,21 @@ class InventoryAdmin extends InventoryBase {
     this.action("set_stock_policy",{item_id,location_id,min_quantity,target_quantity,reorder_multiple:1});
   }
   labels(){
-    try {
+    try{
       const {items,locations}=this.data;
       const capturePath=this.config?.capture_path||DEFAULT_CAPTURE_PATH;
       const base=this.$("base").value.trim();
-      const what=this.$("group").value;
-      const rows=what==="locations" ?
-        locations.map(loc=>({name:loc.name,sub:"Standort "+loc.code,
-          url:makeCaptureUrl(base,capturePath,{inventory_location:loc.id})})) :
-        items.map(item=>({name:item.name,sub:"Artikel "+item.sku,
-          url:makeCaptureUrl(base,capturePath,{inventory_item:item.id})}));
+      const filter=this.$("group").value;
+      const rows=items.flatMap(item=>locations.filter(loc=>
+        (item.location_ids||[]).includes(loc.id)&&(!filter||filter===loc.id))
+        .map(loc=>({
+          name:loc.name+" · "+item.name,
+          sub:item.sku+" · "+loc.code,
+          url:makeCaptureUrl(base,capturePath,{inventory_item:item.id,inventory_location:loc.id})
+        })));
       printLabels(rows);
-      this.$("status").textContent="Etikettenbogen geöffnet. Mit Cmd/Ctrl+P drucken.";
-    } catch(e){this.$("status").textContent="QR-Fehler: "+(e?.message||e);}
+      this.$("status").textContent=rows.length+" Kombinationen als QR-Bogen geöffnet. Cmd/Ctrl+P drucken.";
+    }catch(e){this.$("status").textContent="QR-Fehler: "+(e?.message||e);}
   }
   async removeItem(){
     const item=this.data.items.find(x=>x.id===this.$("delete-item").value);
