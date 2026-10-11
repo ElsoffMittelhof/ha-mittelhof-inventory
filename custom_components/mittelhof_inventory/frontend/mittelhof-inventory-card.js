@@ -274,7 +274,7 @@ class InventoryCapture extends InventoryBase {
       this._quantitySource=selectionKey;
       // A never-counted item is an unknown quantity, not an assumed zero.
       if(kind==="set_count")
-        this.$("quantity").value=assigned&&rec?.counted?String(rec.quantity):"";
+        this.$("quantity").value=assigned&&rec?String(rec.quantity):"";
       else this.$("quantity").value="1";
     }
     this.$("existing").textContent=!assigned&&id&&loc?
