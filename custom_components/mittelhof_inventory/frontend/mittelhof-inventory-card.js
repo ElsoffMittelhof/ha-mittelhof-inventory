@@ -64,19 +64,27 @@ function printLabels(labels) {
   if (!labels.length) throw Error("Keine QR-Etiketten verfügbar");
   const popup = window.open("", "_blank");
   if (!popup) throw Error("Pop-up wurde blockiert – Pop-ups erlauben");
-  const cards = labels.map(x => '<div class="label">' + qrSvg(x.url)
-    + '<div class="name">'+escapeText(x.name)+'</div>'
-    + '<div class="detail">'+escapeText(x.sub || "")+'</div></div>').join("");
+  const chunks = [];
+  for (let offset=0; offset<labels.length; offset+=24) {
+    const items=labels.slice(offset,offset+24);
+    chunks.push('<div class="sheet"><div class="grid">'+items.map(x =>
+      '<div class="label">'+qrSvg(x.url)+'<div class="text"><div class="name">'
+      +escapeText(x.name)+'</div><div class="detail">'
+      +escapeText(x.sub||"")+'</div></div></div>').join("")+'</div></div>');
+  }
+  const cards=chunks.join("");
   popup.document.open();
   popup.document.write('<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Mittelhof QR-Etiketten</title>'
-    + '<style>@page{size:A4;margin:10mm}body{font-family:Arial,sans-serif;margin:0}'
-    + '.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:3mm}'
-    + '.label{break-inside:avoid;border:1px solid #ddd;box-sizing:border-box;padding:2mm;'
-    + 'height:49mm;text-align:center;font-size:10pt;overflow:hidden}'
-    + '.label svg{height:33mm;width:33mm;display:block;margin:0 auto}'
-    + '.name{font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
-    + '.detail{font-size:8pt;color:#555}@media print{.label{border:none}}</style></head>'
-    + '<body><div class="grid">'+cards+'</div></body></html>');
+    + '<style>@page{size:A4;margin:0}body{font-family:Arial,sans-serif;margin:0}'
+    + '.sheet{height:297mm;width:210mm;box-sizing:border-box;break-after:page;overflow:hidden}'
+    + '.sheet:last-child{break-after:auto}'
+    + '.grid{display:grid;margin:12.9mm 9.75mm;grid-template-columns:repeat(3,63.5mm);grid-auto-rows:33.9mm;gap:0}'
+    + '.label{break-inside:avoid;box-sizing:border-box;padding:2mm;display:flex;align-items:center;'
+    + 'width:63.5mm;height:33.9mm;overflow:hidden}'
+    + '.label svg{height:26mm;width:26mm;flex-shrink:0;margin-right:1mm}'
+    + '.text{min-width:0;max-width:32mm}.name{font-weight:bold;font-size:9pt;overflow-wrap:anywhere}'
+    + '.detail{font-size:7pt;color:#555;overflow-wrap:anywhere}</style></head>'
+    + '<body>'+cards+'</body></html>');
   popup.document.close();
   popup.focus();
   // User prints the opened local sheet with Cmd/Ctrl+P; no external service.
@@ -218,7 +226,7 @@ class InventoryCapture extends InventoryBase {
     const {items,locations} = this.data;
     for(const [id,rows] of [["item",items],["loc",locations],["src",locations],["dest",locations]])
       refill(this.$(id),rows,"name");
-    if (!this._deepLinked) {
+    if (!this._deepLinked && locations.length && items.length) {
       this._deepLinked=true;
       const qs=new URLSearchParams(window.location.search);
       let remembered="";
@@ -345,7 +353,7 @@ class InventoryAdmin extends InventoryBase {
       + '<label>Soll<input id="target" type="number" min="0" value="10"></label></div>'
       + '<button id="policy">Regel speichern</button></section>'
       + '<section><h3>QR-Etiketten drucken</h3><div class="hint">'
-      + 'QR-Link öffnet die Erfassung. Keine Zugangsdaten enthalten. Druck: A4, 3 Spalten, etwa 33 mm QR.'
+      + 'QR-Link öffnet die Erfassung. Keine Zugangsdaten enthalten. A4-Vorlage für Avery L4773 (63,5 × 33,9 mm; 24 Etiketten/Bogen). Mit 100 % und ohne Skalierung drucken.'
       + '</div><label>Erreichbare Home-Assistant-Adresse'
       + '<input id="base" placeholder="https://mein-home-assistant.example" /></label>'
       + '<label>Etikettensatz<select id="group"><option value="locations">Standorte</option>'
