@@ -1,5 +1,15 @@
 # Mittelhof Inventar (Home Assistant / HACS)
 
+## v1.0.1 – Dashboard-Konfigurationsfehler behoben
+
+**Bugfix für die Verwaltungsansicht von v1.0.0.** Bei der Umstellung der QR-Druckfunktion auf Inventurbereiche wurde das Eingabefeld `#base` aus der alten Artikelverwaltung entfernt. Ihr JavaScript griff beim Rendern jedoch weiterhin darauf zu (`this.$("base").value=…`), was einen Fehler auslöste und die zweite Karte unter `Verwaltung` als „Konfigurationsfehler“ erscheinen ließ. Der überholte Zugriff wurde entfernt. Die neuen Inventurbereichs-/Kategorie-Funktionen der ersten Verwaltungskarte bleiben erhalten.
+
+Neu in der GitHub-Actions-Validierung: ein Node-basierter Smoke-Test initialisiert alle registrierten Lovelace-Karten mit simuliertem Home Assistant und prüft, dass beim Rendern keine nicht mehr vorhandenen Felder verwendet werden. Bestehende Datenbank, Artikel, Standorte, Gruppen, QR-Codes und Buchungen werden unverändert übernommen.
+
+**Update:** HACS-Version `v1.0.1` installieren, Home Assistant neu starten und die **einzige** Modulressource auf
+`/mittelhof_inventory/frontend/mittelhof-inventory-card.js?v=1.0.1` setzen. Die private `dashboards/inventar.yaml` aus v1.0.0 kann unverändert weiterverwendet werden. Falls das Browser-Frontend noch die alte Datei geladen hat, den HA-Browser bzw. die Companion-App komplett neu starten.
+
+
 ## v1.0.0 – QR je Inventurbereich, Kategorien und Standort löschen
 
 ### Alltag / Inventur
