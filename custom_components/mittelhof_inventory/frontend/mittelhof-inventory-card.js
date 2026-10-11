@@ -1,6 +1,7 @@
 import "./vendor/qrgen.js";
+import "./vendor/jsQR.js";
 
-/* Mittelhof Inventar 0.8.0 – local-only HA cards. No remote QR endpoints. */
+/* Mittelhof Inventar 0.9.0 – local-only HA cards. No remote QR endpoints. */
 const DOMAIN = "mittelhof_inventory";
 const DEFAULT_CAPTURE_PATH = "/inventar-dashboard/erfassung";
 const css = `
@@ -171,9 +172,16 @@ class InventoryOverview extends InventoryBase {
       const tr=el("tr",null,body);
       el("td",item.sku,tr);el("td",item.name,tr);el("td",item.unit,tr);
       let rowtotal=0,complete=true;
+      let assignedCount=0;
       for(const loc of locs) {
         const rec=lookup.get(item.id+"|"+loc.id);
         const td=el("td","",tr,"num");
+        if(!(item.location_ids||[]).includes(loc.id)){
+          td.textContent="n. a.";
+          td.title="Artikel ist diesem Standort nicht zugeordnet";
+          continue;
+        }
+        assignedCount++;
         if (!rec?.counted) {
           td.textContent=rec ? String(rec.quantity)+" (ungeprüft)" : "—";
           td.title="Noch nicht inventarisiert";complete=false;unknown++;
@@ -181,7 +189,7 @@ class InventoryOverview extends InventoryBase {
           td.textContent=String(rec.quantity);counted++;rowtotal+=Number(rec.quantity)||0;
         }
       }
-      el("td",complete?String(rowtotal):(rowtotal?rowtotal+" + ?":"—"),tr,"num");
+      el("td",assignedCount?(complete?String(rowtotal):(rowtotal?rowtotal+" + ?":"—")):"n. a.",tr,"num");
       total+=rowtotal;
     }
     this.$("summary").textContent=
@@ -204,10 +212,11 @@ class InventoryCapture extends InventoryBase {
       + '<div class="row"><div id="single-wrap"><label>Standort<select id="loc"></select></label></div>'
       + '<div id="src-wrap" hidden><label>Von Standort<select id="src"></select></label></div>'
       + '<div id="dest-wrap" hidden><label>Nach Standort<select id="dest"></select></label></div></div>'
-      + '<label id="quantity-label">Gezählter Istbestand (absolut)<input id="quantity" type="number" min="0" step="1" value="0"></label>'
+      + '<label id="quantity-label">Gezählter Istbestand (absolut)<input id="quantity" type="number" min="0" step="1" placeholder="Noch ungezählt"></label>'
       + '<div id="existing" class="hint"></div>'
       + '<label>Bemerkung (optional)<input id="note" maxlength="180"></label>'
       + '<button id="submit">Bestand speichern</button> <button id="scan" type="button">QR-Code scannen</button>'
+      + '<label>Alternativ Kamera-Foto oder QR-Bild auswählen<input id="qr-file" type="file" accept="image/*" capture="environment"></label>'
       + '<div id="camera-box" hidden><video id="camera" autoplay muted playsinline style="width:100%;max-height:240px"></video>'
       + '<button id="stop" type="button">Kamera schließen</button></div>'
       + '<div id="status" class="status" role="status"></div></div></ha-card><style>'+css+'</style>';
@@ -216,6 +225,7 @@ class InventoryCapture extends InventoryBase {
     this.$("loc").onchange=()=>this.updateCurrent();
     this.$("submit").onclick=()=>this.submit();
     this.$("scan").onclick=()=>this.scan();
+    this.$("qr-file").onchange=event=>this.scanImageFile(event.target.files?.[0]);
     this.$("stop").onclick=()=>this.stopCamera();
     this.$("loc").addEventListener("change",()=>{
       try { window.sessionStorage.setItem("mittelhof_inventory_location",this.$("loc").value); } catch(e) {}
@@ -253,13 +263,27 @@ class InventoryCapture extends InventoryBase {
     this.updateCurrent();
   }
   updateCurrent() {
-    const {stock}=this.data;
+    const {stock,items}=this.data;
     const id=this.$("item").value,loc=this.$("loc").value;
     const rec=stock.find(x=>x.item_id===id&&x.location_id===loc);
     const kind=this.$("kind").value;
-    this.$("existing").textContent=kind==="set_count" ?
-      "Bisher in der Software: "+(rec?.quantity??0)+" · "+(rec?.counted?"Bereits gezählt":"Noch nicht inventarisiert") :
-      "Achtung: Wareneingang erhöht den Gesamtbestand, Umlagerung nicht.";
+    const item=items.find(x=>x.id===id);
+    const assigned=!!item&&(item.location_ids||[]).includes(loc);
+    const selectionKey=[id,loc,kind,rec?.quantity??"missing",rec?.counted??false].join("|");
+    if(selectionKey!==this._quantitySource){
+      this._quantitySource=selectionKey;
+      // A never-counted item is an unknown quantity, not an assumed zero.
+      if(kind==="set_count")
+        this.$("quantity").value=assigned&&rec?.counted?String(rec.quantity):"";
+      else this.$("quantity").value="1";
+    }
+    this.$("existing").textContent=!assigned&&id&&loc?
+      "Dieser Artikel ist dem Standort nicht zugeordnet. In Verwaltung zuerst zuordnen.":
+      kind==="set_count"?
+        "Aktueller Buchbestand: "+(rec?.quantity??0)+" · "+
+        (rec?.counted?"Bereits gezählt":"Noch nicht inventarisiert (Istwert bitte eingeben)") :
+        "Achtung: Zugang erhöht den Gesamtbestand, Umlagerung nicht.";
+    this.$("submit").disabled=!!id&&!!loc&&!assigned&&kind!=="transfer";
   }
   async submit() {
     const type=this.$("kind").value,id=this.$("item").value,loc=this.$("loc").value;
@@ -286,9 +310,9 @@ class InventoryCapture extends InventoryBase {
     }
   }
   afterSuccess() {
-    this.$("item").value="";this.$("quantity").value=this.$("kind").value==="set_count"?"0":"1";
     this.$("note").value="";
-    // Keep selected house intentionally for fast initial stocktake.
+    this._quantitySource="";
+    // Keep scanned item + site visible; refreshed HA stock supplies the new count.
   }
   applyQr(urlText) {
     const url=new URL(urlText);
@@ -300,32 +324,67 @@ class InventoryCapture extends InventoryBase {
       this.$("loc").value=locId;
       try{window.sessionStorage.setItem("mittelhof_inventory_location",locId);}catch(e){}
     }
-    if(!itemId&&!locId) throw Error("Kein Inventar-QR-Code");
-    this.updateCurrent();this.$("status").textContent="QR-Code erkannt. Menge eingeben und bestätigen.";
+    if(!itemId||!locId) throw Error("Etikett benötigt Artikel und Standort");
+    this._quantitySource="";this.updateCurrent();this.$("status").textContent="QR-Code erkannt. Menge eingeben und bestätigen.";
+  }
+  readQRFromCanvas(canvas) {
+    if(!window.jsQR) throw Error("Lokaler QR-Decoder nicht verfügbar");
+    const ctx=canvas.getContext("2d",{willReadFrequently:true});
+    const data=ctx.getImageData(0,0,canvas.width,canvas.height);
+    return window.jsQR(data.data,data.width,data.height,{inversionAttempts:"attemptBoth"})?.data;
+  }
+  async scanImageFile(file){
+    if(!file)return;
+    const url=URL.createObjectURL(file);
+    const img=new Image();
+    try {
+      img.src=url;
+      await img.decode();
+      const scale=Math.min(1,1200/Math.max(img.naturalWidth,img.naturalHeight));
+      const canvas=document.createElement("canvas");
+      canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));
+      canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
+      canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+      const text=this.readQRFromCanvas(canvas);
+      if(!text)throw Error("Kein QR-Code gefunden. Foto näher und schärfer aufnehmen.");
+      this.applyQr(text);
+    } catch(e){this.$("status").textContent="QR-Fehler: "+(e?.message||e);}
+    finally {URL.revokeObjectURL(url);this.$("qr-file").value="";}
   }
   async scan(){
-    if(!("BarcodeDetector" in window) || !navigator.mediaDevices?.getUserMedia){
-      this.$("status").textContent="Kamerascanner hier nicht unterstützt. QR mit der Smartphone-Kamera öffnen oder Artikel manuell auswählen.";
+    if(!navigator.mediaDevices?.getUserMedia){
+      this.$("status").textContent="Live-Kamera nicht verfügbar. Bitte QR-Foto aufnehmen oder iPhone-Kamera benutzen.";
       return;
     }
-    try {
+    try{
       this._stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}}});
       const video=this.$("camera");video.srcObject=this._stream;
       this.$("camera-box").hidden=false;await video.play();
-      this._detector=new BarcodeDetector({formats:["qr_code"]});
-      const loop=async()=>{
-        if(!this._stream) return;
+      const canvas=document.createElement("canvas");
+      canvas.width=640;canvas.height=480;
+      const ctx=canvas.getContext("2d",{willReadFrequently:true});
+      const loop=()=>{
+        if(!this._stream)return;
         try{
-          const found=await this._detector.detect(video);
-          if(found.length){
-            this.applyQr(found[0].rawValue);
-            this.stopCamera();return;
+          if(video.readyState>=2){
+            const scale=Math.min(1,640/video.videoWidth,480/video.videoHeight);
+            canvas.width=Math.max(1,Math.round(video.videoWidth*scale));
+            canvas.height=Math.max(1,Math.round(video.videoHeight*scale));
+            ctx.drawImage(video,0,0,canvas.width,canvas.height);
+            const result=this.readQRFromCanvas(canvas);
+            if(result){
+              this.applyQr(result);
+              this.stopCamera();return;
+            }
           }
-        }catch(e){this.$("status").textContent=String(e?.message||e);}
+        }catch(e){this.$("status").textContent="QR-Fehler: "+(e?.message||e);this.stopCamera();return;}
         if(this._stream) this._frame=requestAnimationFrame(loop);
       };
       this._frame=requestAnimationFrame(loop);
-    }catch(e){this.$("status").textContent="Kamerazugriff nicht möglich: "+(e?.message||e);this.stopCamera();}
+    }catch(e){
+      this.$("status").textContent="Kamera nicht verfügbar: "+(e?.message||e)+". Alternativ QR-Foto auswählen.";
+      this.stopCamera();
+    }
   }
   stopCamera(){
     if(this._frame)cancelAnimationFrame(this._frame);
