@@ -79,3 +79,44 @@ set_stock_policy:
     reorder_multiple:
       name: Bestellvielfaches
       selector: {number: {min: 1, max: 1000000, mode: box}}
+set_count:
+  name: Inventur-Istbestand setzen
+  description: Setzt nach Bestätigung eine gezählte absolute Menge an einem Standort (nur Administratoren).
+  fields:
+    item_id:
+      required: true
+      selector: {text: {}}
+    location_id:
+      required: true
+      selector: {text: {}}
+    quantity:
+      name: Gezählt
+      required: true
+      selector: {number: {min: 0, max: 1000000, mode: box}}
+    expected_quantity:
+      name: Bisheriger Buchungsbestand
+      required: true
+      selector: {number: {min: 0, max: 1000000, mode: box}}
+    idempotency_key:
+      selector: {text: {}}
+    note:
+      selector: {text: {}}
+delete_item:
+  name: Artikel unwiderruflich löschen
+  description: Löscht Artikel, dessen Bestände, Regeln und Buchungshistorie (nur Administratoren).
+  fields:
+    item_id:
+      required: true
+      selector: {text: {}}
+    confirmation:
+      name: Bestätigung DELETE:<Artikelnummer>
+      required: true
+      selector: {text: {}}
+reset_stock:
+  name: Gesamten Buchungsbestand löschen
+  description: Löscht alle Bestandspositionen, Zählmarkierungen und Transaktionen. Artikel und Standorte bleiben erhalten (nur Administratoren).
+  fields:
+    confirmation:
+      name: Bestätigung BESTAND LOESCHEN
+      required: true
+      selector: {text: {}}
