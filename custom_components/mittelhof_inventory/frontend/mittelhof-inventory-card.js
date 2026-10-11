@@ -331,8 +331,8 @@ class InventoryCapture extends InventoryBase {
   }
   applyQr(urlText) {
     const url=new URL(urlText);
-    const route=(this.config?.capture_path||DEFAULT_CAPTURE_PATH).replace(/\\/$/,"");
-    if(!["http:","https:"].includes(url.protocol)||url.pathname.replace(/\\/$/,"")!==route)
+    const route=(this.config?.capture_path||DEFAULT_CAPTURE_PATH).replace(/\/$/,"");
+    if(!["http:","https:"].includes(url.protocol)||url.pathname.replace(/\/$/,"")!==route)
       throw Error("Kein gültiger Mittelhof-Erfassungslink");
     const itemId=url.searchParams.get("inventory_item"),locId=url.searchParams.get("inventory_location");
     const {items,locations}=this.data;
