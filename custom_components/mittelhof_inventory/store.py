@@ -58,6 +58,20 @@ class InventoryStore:
         db.setdefault("locations", [])
         db.setdefault("transactions", [])
         db.setdefault("audit", [])
+        db.setdefault("categories", [])
+        db.setdefault("areas", [])
+        db.setdefault("group_batches", [])
+        defaults=("Allgemein", "Geschirr", "Verbrauchsmaterial", "Reinigungsmittel",
+                  "Werkzeug", "Gartengerät")
+        names=list(defaults)
+        names.extend(x.get("category","Allgemein").strip() or "Allgemein"
+                     for x in db["items"])
+        # Idempotently migrate the historical free-text category names to stable IDs.
+        for name in dict.fromkeys(names):
+            if not any(c["name"].casefold()==name.casefold() for c in db["categories"]):
+                db["categories"].append({"id":str(uuid4()),"name":name,"active":True})
+        for loc in db["locations"]:
+            loc.setdefault("active",True)
         seq = max(1, int(db.get("next_item_number", 1)))
         for item in db["items"]:
             # Retain legacy SKUs; never change IDs referenced by an old QR or ledger.
@@ -67,6 +81,11 @@ class InventoryStore:
             item.setdefault("category", "Allgemein")
             item.setdefault("manufacturer", "")
             item.setdefault("product_name", "")
+            if not item.get("category_id") or not any(
+                c["id"]==item["category_id"] for c in db["categories"]):
+                match_cat=next((c for c in db["categories"]
+                    if c["name"].casefold()==item["category"].casefold()),None)
+                item["category_id"]=(match_cat or db["categories"][0])["id"]
         db["next_item_number"] = seq
         old = set(db["stock"]) | set(db["counted"]) | {
             p["item_id"] + "|" + p["location_id"] for p in db["policies"]
@@ -94,13 +113,17 @@ class InventoryStore:
         for item in items:
             item["location_ids"] = [l["location_id"]
                 for l in self.data["item_locations"].values()
-                if l["item_id"] == item["id"]]
-        locations = copy.deepcopy(self.data["locations"])
+                if l["item_id"] == item["id"] and
+                any(loc["id"]==l["location_id"] and loc.get("active",True)
+                    for loc in self.data["locations"])]
+        locations = [copy.deepcopy(loc) for loc in self.data["locations"] if loc.get("active",True)]
         names = {item["id"]: item["name"] for item in items}
         places = {loc["id"]: loc["name"] for loc in locations}
         stock = []
         for key, quantity in self.data["stock"].items():
             item_id, location_id = key.split("|", 1)
+            if location_id not in places:
+                continue
             stock.append({
                 "item_id": item_id, "location_id": location_id,
                 "name": names.get(item_id, "?"), "location": places.get(location_id, "?"),
@@ -110,7 +133,7 @@ class InventoryStore:
         suggestions = []
         for p in self.data["policies"]:
             key = p["item_id"] + "|" + p["location_id"]
-            if key not in self.data["counted"] or key not in self.data["item_locations"] :
+            if key not in self.data["counted"] or key not in self.data["item_locations"] or p["location_id"] not in places:
                 continue  # Unknown is not zero: do not create false reorder suggestions.
             quantity = self.data["stock"].get(key, 0)
             if quantity < p["min_quantity"]:
@@ -124,7 +147,10 @@ class InventoryStore:
                     "quantity": quantity, "suggested_quantity": proposed,
                 })
         return {"items": items, "locations": locations, "stock": stock,
-                "suggestions": suggestions, "policies": copy.deepcopy(self.data["policies"])}
+                "suggestions": suggestions, "policies": copy.deepcopy(self.data["policies"]),
+                "categories":copy.deepcopy(self.data["categories"]),
+                "areas":[copy.deepcopy(a) for a in self.data["areas"]
+                         if a["location_id"] in places and a.get("active",True)]}
 
     async def mutate(self, operation, payload):
         async with self._lock:
@@ -142,7 +168,7 @@ class InventoryStore:
             if not name:
                 raise InventoryError("Artikelname fehlt")
             selected = p.get("location_ids", [])
-            loc_ids = {x["id"] for x in db["locations"]}
+            loc_ids = {x["id"] for x in db["locations"] if x.get("active",True)}
             if len(set(selected)) != len(selected) or any(x not in loc_ids for x in selected):
                 raise InventoryError("Ungültige oder doppelte Standortauswahl")
             seq = db["next_item_number"]
@@ -152,9 +178,18 @@ class InventoryStore:
                 seq += 1
                 sku = f"A-{seq:06d}"
             db["next_item_number"] = seq + 1
+            cat_id = p.get("category_id")
+            if cat_id:
+                category = next((x for x in db["categories"]
+                                 if x["id"] == cat_id and x.get("active",True)), None)
+            else:
+                category = next((x for x in db["categories"]
+                                 if x["name"] == (p.get("category") or "Allgemein")), None)
+            if category is None:
+                raise InventoryError("Unbekannte oder deaktivierte Kategorie")
             entity = {"id": str(uuid4()), "sku": sku, "name": name,
                       "unit": p.get("unit", "Stück").strip() or "Stück",
-                      "category": p.get("category", "Allgemein").strip() or "Allgemein",
+                      "category": category["name"], "category_id":category["id"],
                       "manufacturer": p.get("manufacturer", "").strip(),
                       "product_name": p.get("product_name", "").strip()}
             db["items"].append(entity)
@@ -168,7 +203,17 @@ class InventoryStore:
             name = p["name"].strip()
             if not name:
                 raise InventoryError("Artikelname fehlt")
-            item.update({"name": name,
+            cat_id = p.get("category_id", item["category_id"])
+            category = next((x for x in db["categories"]
+                    if x["id"]==cat_id and x.get("active",True)),None)
+            if category is None:
+                raise InventoryError("Unbekannte Kategorie")
+            # Assigned area must continue to match its category.
+            if any(item["id"] in area["item_ids"] and area["category_id"] != cat_id
+                   for area in db["areas"]):
+                raise InventoryError("Artikel zuerst aus dem bisherigen Inventurbereich entfernen")
+            item.update({"name": name, "category":category["name"],
+                         "category_id":cat_id,
                          "unit": p.get("unit", "Stück").strip() or "Stück",
                          "manufacturer": p.get("manufacturer", "").strip(),
                          "product_name": p.get("product_name", "").strip()})
@@ -180,12 +225,14 @@ class InventoryStore:
             wanted = p["location_ids"]
             if item_id not in {x["id"] for x in db["items"]}:
                 raise InventoryError("Artikel unbekannt")
-            valid = {x["id"] for x in db["locations"]}
+            valid = {x["id"] for x in db["locations"] if x.get("active",True)}
             if len(set(wanted)) != len(wanted) or any(loc not in valid for loc in wanted):
                 raise InventoryError("Ungültige oder doppelte Standorte")
             old = {v["location_id"] for v in db["item_locations"].values()
                    if v["item_id"] == item_id}
             for loc in old - set(wanted):
+                if any(a["location_id"]==loc and item_id in a["item_ids"] for a in db["areas"]):
+                    raise InventoryError("Artikel zuerst aus dem Inventurbereich entfernen")
                 if db["stock"].get(item_id + "|" + loc, 0):
                     raise InventoryError("Bestand vorhanden: Standort zuerst leeren")
             for loc in old - set(wanted):
@@ -200,12 +247,14 @@ class InventoryStore:
             return True
         if operation == "set_item_location":
             item_id, location_id = p["item_id"], p["location_id"]
-            if item_id not in {x["id"] for x in db["items"]} or location_id not in {x["id"] for x in db["locations"]}:
+            if item_id not in {x["id"] for x in db["items"]} or location_id not in {x["id"] for x in db["locations"] if x.get("active",True)}:
                 raise InventoryError("Unbekannter Artikel oder Standort")
             key = item_id + "|" + location_id
             if p["assigned"]:
                 InventoryStore._assign(db, item_id, location_id)
             else:
+                if any(a["location_id"]==location_id and item_id in a["item_ids"] for a in db["areas"]):
+                    raise InventoryError("Artikel zuerst aus dem Inventurbereich entfernen")
                 if db["stock"].get(key, 0):
                     raise InventoryError("Standort hat Bestand. Vor Aufhebung auf einen anderen Standort umlagern oder Bestand korrigieren.")
                 db["item_locations"].pop(key, None)
@@ -218,9 +267,160 @@ class InventoryStore:
             code, name = p["code"].strip(), p["name"].strip()
             if not code or not name or any(x["code"].casefold() == code.casefold() or x["name"].casefold() == name.casefold() for x in db["locations"]):
                 raise InventoryError("Standortkürzel/Name fehlt oder Kürzel bereits vorhanden")
-            entity = {"id": str(uuid4()), "code": code, "name": name}
+            entity = {"id": str(uuid4()), "code": code, "name": name, "active":True}
             db["locations"].append(entity)
             return entity
+        if operation == "delete_location":
+            loc=next((x for x in db["locations"] if x["id"]==p["location_id"]
+                      and x.get("active",True)),None)
+            if loc is None:
+                raise InventoryError("Standort existiert nicht oder wurde bereits entfernt")
+            if p["confirmation"]!="DELETE_LOCATION:"+loc["code"]:
+                raise InventoryError("Bestätigung muss DELETE_LOCATION:"+loc["code"]+" lauten")
+            positive={key:q for key,q in db["stock"].items()
+                      if key.split("|",1)[-1]==loc["id"] and q>0}
+            if positive:
+                raise InventoryError("Standort enthält noch Bestand ("+str(sum(positive.values()))+
+                                     " Einheiten). Vorher umlagern oder korrigieren.")
+            loc["active"]=False  # Preserve IDs/history; omit from active UI and pickers.
+            for key in list(db["item_locations"]):
+                if db["item_locations"][key]["location_id"]==loc["id"]:
+                    del db["item_locations"][key]
+            for key in list(db["stock"]):
+                if key.split("|",1)[-1]==loc["id"]:
+                    del db["stock"][key]
+            for key in list(db["counted"]):
+                if key.split("|",1)[-1]==loc["id"]:
+                    del db["counted"][key]
+            db["policies"]=[x for x in db["policies"] if x["location_id"]!=loc["id"]]
+            for area in db["areas"]:
+                if area["location_id"]==loc["id"]:
+                    area["active"]=False
+            db["audit"].append({"id":str(uuid4()),"at":now(),"action":"delete_location",
+                                "location_id":loc["id"],"name":loc["name"],
+                                "actor":p.get("actor")})
+            return True
+        if operation == "create_category":
+            name=p["name"].strip()
+            if not name or any(c["name"].casefold()==name.casefold()
+                               for c in db["categories"]):
+                raise InventoryError("Kategoriename fehlt oder bereits vorhanden")
+            obj={"id":str(uuid4()),"name":name,"active":True}
+            db["categories"].append(obj)
+            return obj
+        if operation == "update_category":
+            category=next((c for c in db["categories"] if c["id"]==p["category_id"]),None)
+            if category is None:
+                raise InventoryError("Kategorie existiert nicht")
+            name=p["name"].strip()
+            if not name or any(c["id"]!=category["id"] and c["name"].casefold()==name.casefold()
+                               for c in db["categories"]):
+                raise InventoryError("Kategoriename fehlt oder bereits vorhanden")
+            active=p.get("active",True)
+            if not active and (any(i["category_id"]==category["id"] for i in db["items"])
+                              or any(a["category_id"]==category["id"] for a in db["areas"])):
+                raise InventoryError("Genutzte Kategorie kann nicht deaktiviert werden")
+            category.update({"name":name,"active":active})
+            for item in db["items"]:
+                if item["category_id"]==category["id"]:
+                    item["category"]=name
+            return copy.deepcopy(category)
+        if operation == "delete_category":
+            category=next((c for c in db["categories"] if c["id"]==p["category_id"]),None)
+            if category is None:
+                raise InventoryError("Kategorie existiert nicht")
+            if p["confirmation"]!="DELETE_CATEGORY:"+category["name"]:
+                raise InventoryError("Bestätigungswort falsch")
+            if any(i["category_id"]==category["id"] for i in db["items"]) or any(
+                a["category_id"]==category["id"] for a in db["areas"]):
+                raise InventoryError("Kategorie wird noch von Artikeln/Inventurbereichen genutzt")
+            db["categories"]=[c for c in db["categories"] if c["id"]!=category["id"]]
+            return True
+        if operation in ("create_area","update_area"):
+            area = next((a for a in db["areas"] if a["id"]==p.get("area_id")),None) if operation=="update_area" else None
+            if operation=="update_area" and area is None:
+                raise InventoryError("Inventurbereich nicht gefunden")
+            loc=p["location_id"]
+            if loc not in {x["id"] for x in db["locations"] if x.get("active",True)}:
+                raise InventoryError("Inventurbereich benötigt aktiven Standort")
+            category_id=p["category_id"]
+            if not any(x["id"]==category_id and x.get("active",True)
+                       for x in db["categories"]):
+                raise InventoryError("Unbekannte Kategorie")
+            items=p["item_ids"]
+            if not items or len(items)!=len(set(items)):
+                raise InventoryError("Mindestens ein eindeutiger Artikel pro Bereich erforderlich")
+            catalog={x["id"]:x for x in db["items"]}
+            for ident in items:
+                if ident not in catalog or catalog[ident]["category_id"]!=category_id or not InventoryStore._assigned(db,ident,loc):
+                    raise InventoryError("Artikel passt nicht zur Kategorie oder zum Standort")
+                if any(a["id"] != (area or {}).get("id") and a["location_id"]==loc
+                       and a.get("active",True) and ident in a["item_ids"] for a in db["areas"]):
+                    raise InventoryError("Artikel bereits einem anderen Inventurbereich dieses Standorts zugeordnet")
+            name=p["name"].strip()
+            if not name or any(a["location_id"]==loc and a["name"].casefold()==name.casefold()
+                               and a["id"]!=(area or {}).get("id") and a.get("active",True) for a in db["areas"]):
+                raise InventoryError("Bereichsname fehlt oder bereits an diesem Standort vorhanden")
+            if area is None:
+                area={"id":str(uuid4()),"active":True}
+                db["areas"].append(area)
+            area.update({"location_id":loc,"category_id":category_id,
+                         "item_ids":list(items),"name":name})
+            return copy.deepcopy(area)
+        if operation == "delete_area":
+            area=next((a for a in db["areas"] if a["id"]==p["area_id"]
+                       and a.get("active",True)),None)
+            if area is None:
+                raise InventoryError("Inventurbereich nicht gefunden")
+            if p["confirmation"]!="DELETE_AREA:"+area["name"]:
+                raise InventoryError("Bestätigung für Inventurbereich fehlt")
+            area["active"]=False  # Stable historic ID; old QR cannot open deactivated area.
+            return True
+        if operation == "count_area":
+            area=next((a for a in db["areas"] if a["id"]==p["area_id"]
+                       and a.get("active",True)),None)
+            if area is None:
+                raise InventoryError("Inventurbereich nicht aktiv")
+            identity=p["idempotency_key"]
+            previous=next((x for x in db["group_batches"] if x["idempotency_key"]==identity),None)
+            if previous:
+                if previous["area_id"]!=area["id"] or previous["counts"]!=p["counts"]:
+                    raise InventoryError("Idempotenzschlüssel anderweitig vergeben")
+                return copy.deepcopy(previous)
+            counts=p["counts"]
+            if not counts or len(counts)>200:
+                raise InventoryError("Eine Inventurgruppe benötigt 1–200 Positionen")
+            ids=[x["item_id"] for x in counts]
+            if len(ids)!=len(set(ids)) or any(x not in area["item_ids"] for x in ids):
+                raise InventoryError("Doppelte oder fremde Artikel im Inventurbereich")
+            loc=area["location_id"]
+            for row in counts:
+                key=row["item_id"]+"|"+loc
+                if not InventoryStore._assigned(db,row["item_id"],loc):
+                    raise InventoryError("Artikel nicht mehr dem Standort zugeordnet")
+                if db["stock"].get(key,0)!=row["expected_quantity"] or (
+                    key in db["counted"])!=row["expected_counted"]:
+                    raise InventoryError("Bestand von Artikel "+row["item_id"]+
+                                         " zwischenzeitlich geändert; neu laden und erneut prüfen")
+            at=now()
+            batch_id=str(uuid4())
+            for row in counts:
+                key=row["item_id"]+"|"+loc
+                old=db["stock"].get(key,0)
+                db["stock"][key]=row["quantity"]
+                db["counted"][key]=at
+                db["transactions"].append({
+                    "id":str(uuid4()),"created_at":at,"kind":"stocktake",
+                    "group_id":batch_id,"item_id":row["item_id"],
+                    "from_location_id":None,"to_location_id":loc,
+                    "quantity":row["quantity"],"previous_quantity":old,
+                    "delta":row["quantity"]-old,"expected_quantity":old,
+                    "note":p.get("note",""),"actor":p.get("actor")
+                })
+            receipt={"id":batch_id,"idempotency_key":identity,"area_id":area["id"],
+                     "counts":copy.deepcopy(counts),"at":at,"positions":len(counts)}
+            db["group_batches"].append(receipt)
+            return copy.deepcopy(receipt)
         if operation == "reset_stock":
             if p["confirmation"] != "BESTAND LOESCHEN":
                 raise InventoryError("Bestätigung fehlt: BESTAND LOESCHEN")
@@ -239,6 +439,8 @@ class InventoryStore:
                 raise InventoryError("Bestätigung muss DELETE:<Artikelnummer> lauten")
             ident = item["id"]
             db["items"] = [x for x in db["items"] if x["id"] != ident]
+            for area in db["areas"]:
+                area["item_ids"] = [x for x in area["item_ids"] if x != ident]
             for key in list(db["item_locations"]):
                 if key.split("|", 1)[0] == ident:
                     del db["item_locations"][key]
@@ -255,7 +457,7 @@ class InventoryStore:
                                 "actor": p.get("actor")})
             return True
         item_ids = {x["id"] for x in db["items"]}
-        location_ids = {x["id"] for x in db["locations"]}
+        location_ids = {x["id"] for x in db["locations"] if x.get("active",True)}
         if p["item_id"] not in item_ids:
             raise InventoryError("Unbekannter Artikel")
         if operation == "set_stock_policy":
