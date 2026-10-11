@@ -1,6 +1,7 @@
 """Native inventory integration for Home Assistant."""
 from __future__ import annotations
 import uuid
+import logging
 from pathlib import Path
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components import websocket_api
@@ -13,6 +14,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .const import DOMAIN
 from .store import InventoryStore, InventoryError
 
+_LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["sensor"]
 LOCATION_SCHEMA = vol.Schema({vol.Required("code"): cv.string, vol.Required("name"): cv.string})
 ITEM_SCHEMA = vol.Schema({
@@ -146,8 +148,8 @@ async def websocket_inventory_execute(hass, connection, msg):
     except (InventoryError, vol.Invalid) as exc:
         connection.send_error(msg["id"], "inventory_invalid", str(exc))
     except Exception as exc:
+        _LOGGER.exception("Inventar WebSocket Aktion %s fehlgeschlagen", msg["action"])
         connection.send_error(msg["id"], "inventory_internal", f"Speichern nicht bestätigt: {type(exc).__name__}")
-        raise
 
 
 @websocket_api.websocket_command({
