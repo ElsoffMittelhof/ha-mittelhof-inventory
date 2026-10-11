@@ -1,7 +1,7 @@
 import "./vendor/qrgen.js";
 import "./vendor/jsQR.js";
 
-/* Mittelhof Inventar 0.9.1 – local-only HA cards. No remote QR endpoints. */
+/* Mittelhof Inventar 1.0.0 – local-only HA cards. No remote QR endpoints. */
 const DOMAIN = "mittelhof_inventory";
 const DEFAULT_CAPTURE_PATH = "/inventar-dashboard/erfassung";
 const css = `
@@ -134,6 +134,8 @@ class InventoryBase extends HTMLElement {
       locations: this.records("standorte", "locations_entity"),
       stock: this.records("bestandspositionen", "stock_entity"),
       suggestions: this.records("fehlbestande", "suggestions_entity"),
+      categories: this.records("kategorien", "categories_entity"),
+      areas: this.records("bereiche", "areas_entity"),
     };
   }
   async action(service, payload, success, statusId="status") {
@@ -471,9 +473,7 @@ class InventoryAdmin extends InventoryBase {
       + '<label>Einheit<input id="unit" value="Stück"></label>'
       + '<label>Hersteller (optional)<input id="manufacturer"></label>'
       + '<label>Genaue Produktbezeichnung / Modell (optional)<input id="product-name"></label>'
-      + '<label>Kategorie<select id="category"><option>Allgemein</option><option>Geschirr</option>'
-      + '<option>Verbrauchsmaterial</option><option>Reinigungsmittel</option>'
-      + '<option>Werkzeug</option><option>Gartengerät</option></select></label></div>'
+      + '<label>Kategorie<select id="category"></select></label></div>'
       + '<div class="hint">Artikel an diesen Standorten führen:</div>'
       + '<div id="new-locations"></div>'
       + '<button id="additem">Artikel anlegen</button></section>'
@@ -481,6 +481,7 @@ class InventoryAdmin extends InventoryBase {
       + '<label>Artikel auswählen<select id="edit-item"></select></label>'
       + '<label>Artikelname<input id="edit-name"></label>'
       + '<label>Einheit<input id="edit-unit"></label>'
+      + '<label>Kategorie<select id="edit-category"></select></label>'
       + '<label>Hersteller (optional)<input id="edit-manufacturer"></label>'
       + '<label>Genaue Produktbezeichnung / Modell (optional)<input id="edit-product-name"></label>'
       + '<button id="save-item">Artikeldetails speichern</button>'
@@ -506,13 +507,6 @@ class InventoryAdmin extends InventoryBase {
       + '<label>Soll<input id="target" type="number" min="0" value="10"></label></div>'
       + '<button id="policy">Regel speichern</button>'
       + '<div id="policy-status" class="status" role="status" aria-live="polite"></div></section>'
-      + '<section><h3>QR-Etiketten drucken</h3><div class="hint">'
-      + 'QR-Link öffnet die Erfassung. Keine Zugangsdaten enthalten. A4-Vorlage für Avery L4773 (63,5 × 33,9 mm; 24 Etiketten/Bogen). Mit 100 % und ohne Skalierung drucken.'
-      + '</div><label>Erreichbare Home-Assistant-Adresse'
-      + '<input id="base" placeholder="https://mein-home-assistant.example" /></label>'
-      + '<label>Standortfilter<select id="group"><option value="">Alle Standorte</option></select></label>'
-      + '<div class="hint">Ein QR-Etikett pro aktiver Artikel-Standort-Kombination.</div>'
-      + '<button id="print">QR-Etikettenbogen öffnen</button></section>'
       + '<section><h3>Testdaten löschen</h3>'
       + '<div class="hint">Nur Administratoren. Vorher HA-Backup erstellen. Löschen ist unwiderruflich.</div>'
       + '<label>Einzelnen Artikel vollständig löschen<select id="delete-item"></select></label>'
@@ -534,21 +528,23 @@ class InventoryAdmin extends InventoryBase {
     this.$("policy").onclick=()=>this.policy();
     this.$("assigned-item").onchange=()=>{this._editorSignature="";this.renderAssignments();};
     this.$("save-assignment").onclick=()=>this.saveAssignments();
-    this.$("print").onclick=()=>this.labels();
+
     this.$("delete").onclick=()=>this.removeItem();
     this.$("reset").onclick=()=>this.resetStock();
     this.$("base").value=window.location.origin;
   }
   update(){
     if(!this._ready)return;
-    const {items,locations}=this.data;
+    const {items,locations,categories}=this.data;
+    refill(this.$("category"),categories.filter(x=>x.active),"name");
+    refill(this.$("edit-category"),categories.filter(x=>x.active),"name");
     refill(this.$("item"),items,"name");
     refill(this.$("delete-item"),items,"name");
     refill(this.$("assigned-item"),items,"name");
     refill(this.$("edit-item"),items,"name");
     this.loadEditItem();
     refill(this.$("loc"),locations,"name");
-    refill(this.$("group"),[{id:"",name:"Alle Standorte"},...locations],"name");
+
     const newLoc=this.$("new-locations");
     const sig=locations.map(x=>x.id+":"+x.name).join("|");
     if(this._newLocationSig!==sig){
@@ -567,6 +563,7 @@ class InventoryAdmin extends InventoryBase {
     if(this._editingId===(item?.id||""))return;
     this._editingId=item?.id||"";
     this.$("edit-name").value=item?.name||"";
+    this.$("edit-category").value=item?.category_id||"";
     this.$("edit-unit").value=item?.unit||"Stück";
     this.$("edit-manufacturer").value=item?.manufacturer||"";
     this.$("edit-product-name").value=item?.product_name||"";
@@ -577,6 +574,7 @@ class InventoryAdmin extends InventoryBase {
     if(!item_id||!name){this.$("item-status").textContent="Artikel und Name angeben.";return;}
     this.action("update_item",{
       item_id,name,unit:this.$("edit-unit").value.trim()||"Stück",
+      category_id:this.$("edit-category").value,
       manufacturer:this.$("edit-manufacturer").value.trim(),
       product_name:this.$("edit-product-name").value.trim()
     },null,"item-status");
@@ -609,7 +607,7 @@ class InventoryAdmin extends InventoryBase {
     const location_ids=[...this.$("new-locations").querySelectorAll("input:checked")].map(x=>x.value);
     if(!location_ids.length){this.$("status").textContent="Mindestens einen Standort wählen.";return;}
     this.action("create_item",{name,unit:this.$("unit").value.trim()||"Stück",
-      category:this.$("category").value,manufacturer:this.$("manufacturer").value.trim(),
+      category_id:this.$("category").value,manufacturer:this.$("manufacturer").value.trim(),
       product_name:this.$("product-name").value.trim(),location_ids},()=>{
         this.$("name").value="";this.$("manufacturer").value="";this.$("product-name").value="";
         for(const cb of this.$("new-locations").querySelectorAll("input"))cb.checked=false;
@@ -629,23 +627,6 @@ class InventoryAdmin extends InventoryBase {
       this.$("status").textContent="Artikel, Standort und gültige Mindest-/Sollwerte erforderlich.";return;
     }
     this.action("set_stock_policy",{item_id,location_id,min_quantity,target_quantity,reorder_multiple:1},null,"policy-status");
-  }
-  labels(){
-    try{
-      const {items,locations}=this.data;
-      const capturePath=this.config?.capture_path||DEFAULT_CAPTURE_PATH;
-      const base=this.$("base").value.trim();
-      const filter=this.$("group").value;
-      const rows=items.flatMap(item=>locations.filter(loc=>
-        (item.location_ids||[]).includes(loc.id)&&(!filter||filter===loc.id))
-        .map(loc=>({
-          name:loc.name+" · "+item.name,
-          sub:item.sku+" · "+loc.code,
-          url:makeCaptureUrl(base,capturePath,{inventory_item:item.id,inventory_location:loc.id})
-        })));
-      printLabels(rows);
-      this.$("status").textContent=rows.length+" Kombinationen als QR-Bogen geöffnet. Cmd/Ctrl+P drucken.";
-    }catch(e){this.$("status").textContent="QR-Fehler: "+(e?.message||e);}
   }
   async removeItem(){
     const item=this.data.items.find(x=>x.id===this.$("delete-item").value);
