@@ -239,10 +239,12 @@ class InventoryOverview extends InventoryBase {
       + '<div id="summary" class="hint"></div>'
       + '<div id="area-overview"></div></div></ha-card><style>'+css+'</style>';
     this.$("all").onclick=()=>{
+      this._manuallySelected=true;
       this._selectedLocationIds=new Set(this.data.locations.map(x=>x.id));
       this._locationSignature=null;this.update();
     };
     this.$("none").onclick=()=>{
+      this._manuallySelected=true;
       this._selectedLocationIds=new Set();
       this._locationSignature=null;this.update();
     };
@@ -250,10 +252,12 @@ class InventoryOverview extends InventoryBase {
   update() {
     if(!this._ready)return;
     const {items,locations,stock,areas,categories} = this.data;
-    if(!this._selectedLocationIds)
+    if(!this._manuallySelected)
       this._selectedLocationIds=new Set(locations.map(x=>x.id));
-    const valid=new Set(locations.map(x=>x.id));
-    this._selectedLocationIds=new Set([...this._selectedLocationIds].filter(id=>valid.has(id)));
+    else {
+      const valid=new Set(locations.map(x=>x.id));
+      this._selectedLocationIds=new Set([...this._selectedLocationIds].filter(id=>valid.has(id)));
+    }
     const signature=locations.map(x=>x.id+"|"+x.name).join(";");
     if(signature!==this._locationSignature){
       this._locationSignature=signature;
@@ -265,6 +269,7 @@ class InventoryOverview extends InventoryBase {
         checkbox.type="checkbox";checkbox.value=location.id;checkbox.style.width="auto";
         checkbox.checked=this._selectedLocationIds.has(location.id);
         checkbox.onchange=()=>{
+          this._manuallySelected=true;
           if(checkbox.checked)this._selectedLocationIds.add(location.id);
           else this._selectedLocationIds.delete(location.id);
           this.update();
