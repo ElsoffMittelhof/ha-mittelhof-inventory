@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.components import websocket_api
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.config_entries import ConfigEntry
@@ -14,7 +15,21 @@ from .store import InventoryStore, InventoryError
 
 PLATFORMS = ["sensor"]
 LOCATION_SCHEMA = vol.Schema({vol.Required("code"): cv.string, vol.Required("name"): cv.string})
-ITEM_SCHEMA = vol.Schema({vol.Required("name"): cv.string, vol.Optional("unit", default="Stück"): cv.string, vol.Optional("category", default="Allgemein"): cv.string, vol.Optional("location_ids", default=[]): vol.All(cv.ensure_list, [cv.string])})
+ITEM_SCHEMA = vol.Schema({
+    vol.Required("name"): cv.string,
+    vol.Optional("unit", default="Stück"): cv.string,
+    vol.Optional("category", default="Allgemein"): cv.string,
+    vol.Optional("manufacturer", default=""): cv.string,
+    vol.Optional("product_name", default=""): cv.string,
+    vol.Optional("location_ids", default=[]): vol.All(cv.ensure_list, [cv.string]),
+})
+UPDATE_ITEM_SCHEMA = vol.Schema({
+    vol.Required("item_id"): cv.string,
+    vol.Required("name"): cv.string,
+    vol.Optional("unit", default="Stück"): cv.string,
+    vol.Optional("manufacturer", default=""): cv.string,
+    vol.Optional("product_name", default=""): cv.string,
+})
 ASSIGN_BULK_SCHEMA = vol.Schema({
     vol.Required("item_id"): cv.string,
     vol.Required("location_ids"): vol.All(cv.ensure_list, [cv.string]),
@@ -41,7 +56,7 @@ RESET_STOCK_SCHEMA = vol.Schema({
     vol.Required("confirmation"): cv.string,
 })
 TRANSACTION_SCHEMA = vol.Schema({vol.Required("kind"): vol.In(["receipt", "consume", "transfer", "adjustment_in", "adjustment_out"]), vol.Required("item_id"): cv.string, vol.Optional("from_location_id"): cv.string, vol.Optional("to_location_id"): cv.string, vol.Required("quantity"): vol.All(vol.Coerce(int), vol.Range(min=1, max=1000000)), vol.Optional("note", default=""): cv.string, vol.Optional("idempotency_key"): cv.string})
-SCHEMAS = {"create_item": ITEM_SCHEMA, "create_location": LOCATION_SCHEMA, "set_stock_policy": POLICY_SCHEMA, "book_transaction": TRANSACTION_SCHEMA, "set_count": COUNT_SCHEMA, "delete_item": DELETE_ITEM_SCHEMA, "reset_stock": RESET_STOCK_SCHEMA, "set_item_location": ASSIGN_SCHEMA, "set_item_locations": ASSIGN_BULK_SCHEMA}
+SCHEMAS = {"create_item": ITEM_SCHEMA, "update_item": UPDATE_ITEM_SCHEMA, "create_location": LOCATION_SCHEMA, "set_stock_policy": POLICY_SCHEMA, "book_transaction": TRANSACTION_SCHEMA, "set_count": COUNT_SCHEMA, "delete_item": DELETE_ITEM_SCHEMA, "reset_stock": RESET_STOCK_SCHEMA, "set_item_location": ASSIGN_SCHEMA, "set_item_locations": ASSIGN_BULK_SCHEMA}
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = InventoryStore(hass)
@@ -58,7 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["_frontend_registered"] = True
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    admin_actions = {"create_item", "create_location", "set_stock_policy", "set_item_location", "set_item_locations", "set_count", "delete_item", "reset_stock"}
+    admin_actions = {"create_item", "update_item", "create_location", "set_stock_policy", "set_item_location", "set_item_locations", "set_count", "delete_item", "reset_stock"}
     for name, schema in SCHEMAS.items():
         if hass.services.has_service(DOMAIN, name):
             continue
@@ -85,7 +100,69 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 raise HomeAssistantError(str(exc)) from exc
             async_dispatcher_send(hass, f"{DOMAIN}_updated")
         hass.services.async_register(DOMAIN, name, handler, schema=schema)
+    if not hass.data[DOMAIN].get("_ws_registered"):
+        websocket_api.async_register_command(hass, websocket_inventory_execute)
+        websocket_api.async_register_command(hass, websocket_inventory_read)
+        hass.data[DOMAIN]["_ws_registered"] = True
     return True
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "mittelhof_inventory/execute",
+    vol.Required("action"): vol.In(list(SCHEMAS)),
+    vol.Required("data"): dict,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_inventory_execute(hass, connection, msg):
+    """Execute under authenticated admin context and acknowledge persisted data."""
+    active = [v for v in hass.data.get(DOMAIN, {}).values()
+              if isinstance(v, InventoryStore)]
+    if len(active) != 1:
+        connection.send_error(msg["id"], "not_ready", "Inventarinstanz nicht eindeutig")
+        return
+    try:
+        action = msg["action"]
+        payload = SCHEMAS[action](dict(msg["data"]))
+        payload["actor"] = connection.user.id
+        if action in ("set_count", "book_transaction"):
+            payload.setdefault("idempotency_key", str(uuid.uuid4()))
+        if action == "book_transaction":
+            payload.setdefault("from_location_id", None)
+            payload.setdefault("to_location_id", None)
+        result = await active[0].mutate(action, payload)
+        data = active[0].data
+        confirmed = {"action": action, "saved": True, "result": result}
+        if action == "set_count":
+            key = payload["item_id"] + "|" + payload["location_id"]
+            confirmed["stored_quantity"] = data["stock"].get(key)
+            confirmed["counted_at"] = data["counted"].get(key)
+        if action == "set_stock_policy":
+            confirmed["policy"] = next((x for x in data["policies"] if
+                x["item_id"] == payload["item_id"] and
+                x["location_id"] == payload["location_id"]), None)
+        async_dispatcher_send(hass, f"{DOMAIN}_updated")
+        connection.send_result(msg["id"], confirmed)
+    except (InventoryError, vol.Invalid) as exc:
+        connection.send_error(msg["id"], "inventory_invalid", str(exc))
+    except Exception as exc:
+        connection.send_error(msg["id"], "inventory_internal", f"Speichern nicht bestätigt: {type(exc).__name__}")
+        raise
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "mittelhof_inventory/read",
+})
+@websocket_api.require_admin
+def websocket_inventory_read(hass, connection, msg):
+    """Return authoritative persisted in-memory state for read-after-write."""
+    active = [v for v in hass.data.get(DOMAIN, {}).values()
+              if isinstance(v, InventoryStore)]
+    if len(active) != 1:
+        connection.send_error(msg["id"], "not_ready", "Inventarinstanz nicht eindeutig")
+        return
+    connection.send_result(msg["id"], active[0].snapshot())
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
