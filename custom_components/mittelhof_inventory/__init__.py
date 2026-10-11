@@ -21,6 +21,7 @@ ITEM_SCHEMA = vol.Schema({
     vol.Required("name"): cv.string,
     vol.Optional("unit", default="Stück"): cv.string,
     vol.Optional("category", default="Allgemein"): cv.string,
+    vol.Optional("category_id"): cv.string,
     vol.Optional("manufacturer", default=""): cv.string,
     vol.Optional("product_name", default=""): cv.string,
     vol.Optional("location_ids", default=[]): vol.All(cv.ensure_list, [cv.string]),
@@ -29,8 +30,34 @@ UPDATE_ITEM_SCHEMA = vol.Schema({
     vol.Required("item_id"): cv.string,
     vol.Required("name"): cv.string,
     vol.Optional("unit", default="Stück"): cv.string,
+    vol.Optional("category_id"): cv.string,
     vol.Optional("manufacturer", default=""): cv.string,
     vol.Optional("product_name", default=""): cv.string,
+})
+CATEGORY_CREATE_SCHEMA = vol.Schema({vol.Required("name"): cv.string})
+CATEGORY_UPDATE_SCHEMA = vol.Schema({vol.Required("category_id"): cv.string,
+    vol.Required("name"): cv.string, vol.Optional("active", default=True): cv.boolean})
+CATEGORY_DELETE_SCHEMA = vol.Schema({vol.Required("category_id"): cv.string,
+    vol.Required("confirmation"): cv.string})
+AREA_SCHEMA = vol.Schema({vol.Required("name"): cv.string,
+    vol.Required("location_id"): cv.string, vol.Required("category_id"): cv.string,
+    vol.Required("item_ids"): vol.All(cv.ensure_list, [cv.string])})
+AREA_UPDATE_SCHEMA = AREA_SCHEMA.extend({vol.Required("area_id"): cv.string})
+AREA_DELETE_SCHEMA = vol.Schema({vol.Required("area_id"): cv.string,
+    vol.Required("confirmation"): cv.string})
+LOCATION_DELETE_SCHEMA = vol.Schema({vol.Required("location_id"): cv.string,
+    vol.Required("confirmation"): cv.string})
+AREA_COUNT_ROW_SCHEMA = vol.Schema({
+    vol.Required("item_id"): cv.string,
+    vol.Required("quantity"): vol.All(vol.Coerce(int),vol.Range(min=0,max=1000000)),
+    vol.Required("expected_quantity"): vol.All(vol.Coerce(int),vol.Range(min=0,max=1000000)),
+    vol.Required("expected_counted"): cv.boolean,
+})
+AREA_COUNT_SCHEMA = vol.Schema({
+    vol.Required("area_id"): cv.string,
+    vol.Required("counts"): vol.All(cv.ensure_list,[AREA_COUNT_ROW_SCHEMA]),
+    vol.Optional("idempotency_key"): cv.string,
+    vol.Optional("note",default=""): cv.string,
 })
 ASSIGN_BULK_SCHEMA = vol.Schema({
     vol.Required("item_id"): cv.string,
@@ -58,7 +85,15 @@ RESET_STOCK_SCHEMA = vol.Schema({
     vol.Required("confirmation"): cv.string,
 })
 TRANSACTION_SCHEMA = vol.Schema({vol.Required("kind"): vol.In(["receipt", "consume", "transfer", "adjustment_in", "adjustment_out"]), vol.Required("item_id"): cv.string, vol.Optional("from_location_id"): cv.string, vol.Optional("to_location_id"): cv.string, vol.Required("quantity"): vol.All(vol.Coerce(int), vol.Range(min=1, max=1000000)), vol.Optional("note", default=""): cv.string, vol.Optional("idempotency_key"): cv.string})
-SCHEMAS = {"create_item": ITEM_SCHEMA, "update_item": UPDATE_ITEM_SCHEMA, "create_location": LOCATION_SCHEMA, "set_stock_policy": POLICY_SCHEMA, "book_transaction": TRANSACTION_SCHEMA, "set_count": COUNT_SCHEMA, "delete_item": DELETE_ITEM_SCHEMA, "reset_stock": RESET_STOCK_SCHEMA, "set_item_location": ASSIGN_SCHEMA, "set_item_locations": ASSIGN_BULK_SCHEMA}
+SCHEMAS = {"create_item": ITEM_SCHEMA, "update_item": UPDATE_ITEM_SCHEMA, "create_location": LOCATION_SCHEMA, "set_stock_policy": POLICY_SCHEMA, "book_transaction": TRANSACTION_SCHEMA, "set_count": COUNT_SCHEMA, "delete_item": DELETE_ITEM_SCHEMA, "reset_stock": RESET_STOCK_SCHEMA, "set_item_location": ASSIGN_SCHEMA, "set_item_locations": ASSIGN_BULK_SCHEMA,
+    "create_category": CATEGORY_CREATE_SCHEMA,
+    "update_category": CATEGORY_UPDATE_SCHEMA,
+    "delete_category": CATEGORY_DELETE_SCHEMA,
+    "create_area": AREA_SCHEMA,
+    "update_area": AREA_UPDATE_SCHEMA,
+    "delete_area": AREA_DELETE_SCHEMA,
+    "delete_location": LOCATION_DELETE_SCHEMA,
+    "count_area": AREA_COUNT_SCHEMA}
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = InventoryStore(hass)
@@ -75,7 +110,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["_frontend_registered"] = True
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    admin_actions = {"create_item", "update_item", "create_location", "set_stock_policy", "set_item_location", "set_item_locations", "set_count", "delete_item", "reset_stock"}
+    admin_actions = {"create_item", "update_item", "create_location", "set_stock_policy", "set_item_location", "set_item_locations", "set_count", "delete_item", "reset_stock",
+                     "create_category", "update_category", "delete_category", "create_area",
+                     "update_area", "delete_area", "delete_location", "count_area"}
     for name, schema in SCHEMAS.items():
         if hass.services.has_service(DOMAIN, name):
             continue
@@ -90,7 +127,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     raise HomeAssistantError("Aktion nur für angemeldete Administratoren erlaubt")
             payload = dict(call.data)
             payload["actor"] = call.context.user_id
-            if action in ("book_transaction", "set_count"):
+            if action in ("book_transaction", "set_count", "count_area"):
                 payload.setdefault("idempotency_key", str(uuid.uuid4()))
             if action == "book_transaction":
                 payload.setdefault("idempotency_key", str(uuid.uuid4()))
@@ -127,7 +164,7 @@ async def websocket_inventory_execute(hass, connection, msg):
         action = msg["action"]
         payload = SCHEMAS[action](dict(msg["data"]))
         payload["actor"] = connection.user.id
-        if action in ("set_count", "book_transaction"):
+        if action in ("set_count", "book_transaction", "count_area"):
             payload.setdefault("idempotency_key", str(uuid.uuid4()))
         if action == "book_transaction":
             payload.setdefault("from_location_id", None)
@@ -139,6 +176,9 @@ async def websocket_inventory_execute(hass, connection, msg):
             key = payload["item_id"] + "|" + payload["location_id"]
             confirmed["stored_quantity"] = data["stock"].get(key)
             confirmed["counted_at"] = data["counted"].get(key)
+        if action == "count_area":
+            confirmed["batch"] = result
+            confirmed["stored_positions"] = result["positions"]
         if action == "set_stock_policy":
             confirmed["policy"] = next((x for x in data["policies"] if
                 x["item_id"] == payload["item_id"] and
