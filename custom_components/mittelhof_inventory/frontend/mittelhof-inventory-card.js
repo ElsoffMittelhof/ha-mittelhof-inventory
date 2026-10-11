@@ -129,7 +129,7 @@ class InventoryBase extends HTMLElement {
     return Array.isArray(st?.attributes?.records) ? st.attributes.records : [];
   }
   get data() {
-    return this._verifiedData || {
+    return this._verifiedData || this._sourceData || {
       items: this.records("artikel", "items_entity"),
       locations: this.records("standorte", "locations_entity"),
       stock: this.records("bestandspositionen", "stock_entity"),
@@ -137,6 +137,19 @@ class InventoryBase extends HTMLElement {
       categories: this.records("kategorien", "categories_entity"),
       areas: this.records("bereiche", "areas_entity"),
     };
+  }
+  async refreshFromServer(statusId) {
+    try {
+      const fresh=await this._hass.connection.sendMessagePromise({type:"mittelhof_inventory/read"});
+      this._sourceData=fresh;
+      this.update();
+      if(statusId&&this.$(statusId))this.$(statusId).textContent="Bestand aktualisiert.";
+      return fresh;
+    }catch(err){
+      if(statusId&&this.$(statusId))
+        this.$(statusId).textContent="Aktualisierung fehlgeschlagen: "+(err?.message||err);
+      return null;
+    }
   }
   async action(service, payload, success, statusId="status") {
     const status = this.$(statusId) || this.$("status");
@@ -161,6 +174,7 @@ class InventoryBase extends HTMLElement {
       });
       if (!fresh || !Array.isArray(fresh.items)) throw Error("Gespeichert, aber der neue Bestand konnte nicht gelesen werden");
       this._verifiedData = fresh;
+      this._sourceData = fresh;
       if (success) success(reply, fresh);
       try { this.update(); } finally { this._verifiedData = null; }
       const msg = service === "set_count"
@@ -644,10 +658,327 @@ class InventoryAdmin extends InventoryBase {
   }
 }
 
+
+class InventoryAreaCapture extends InventoryBase {
+  render() {
+    this.innerHTML='<ha-card header="Inventurbereiche · Sammelerfassung"><div class="body">'
+      + '<p class="hint">Ein QR-Code öffnet eine komplette Schublade oder ein Regal. Nur die zugeordneten Artikel erscheinen.</p>'
+      + '<label>Inventurbereich<select id="area-select"></select></label>'
+      + '<button id="reload" type="button">Bestände neu laden</button>'
+      + '<button id="photo" type="button">Bereichs-QR über Foto scannen</button>'
+      + '<input id="qr-file" type="file" accept="image/*" capture="environment" hidden />'
+      + '<div id="area-desc" class="hint"></div><div id="group-items"></div>'
+      + '<label>Bemerkung (optional)<input id="group-note" maxlength="180" /></label>'
+      + '<button id="submit">Inventur prüfen</button>'
+      + '<div id="preview" class="hint"></div>'
+      + '<div id="status" class="status" role="status" aria-live="polite"></div>'
+      + '</div></ha-card><style>'+css+'</style>';
+    this.$("area-select").onchange=()=>{this._lineSignature="";this._pending=null;this.update();};
+    this.$("reload").onclick=()=>{this._lineSignature="";this._pending=null;this.refreshFromServer("status");};
+    this.$("photo").onclick=()=>this.$("qr-file").click();
+    this.$("qr-file").onchange=e=>this.scanFile(e.target.files?.[0]);
+    this.$("submit").onclick=()=>this.saveGroup();
+    this.refreshFromServer("status");
+  }
+  update(){
+    if(!this._ready)return;
+    const {areas,locations,categories,items,stock}=this.data;
+    const active=areas.filter(a=>a.active!==false);
+    const choice=this.$("area-select");
+    refill(choice,active.map(a=>({
+      id:a.id,name:(locations.find(x=>x.id===a.location_id)?.name||"?")
+        +" · "+a.name,
+    })),"name");
+    const qs=new URLSearchParams(window.location.search);
+    const direct=qs.get("inventory_area");
+    if(!this._deepLinkSelected&&direct&&active.some(a=>a.id===direct)){
+      choice.value=direct;this._deepLinkSelected=true;
+    }
+    const area=active.find(a=>a.id===choice.value);
+    this.$("area-desc").textContent=area
+      ? "Standort: "+(locations.find(x=>x.id===area.location_id)?.name||"?")+
+        " · Kategorie: "+(categories.find(x=>x.id===area.category_id)?.name||"?")
+      : "Bereich auswählen. Inventurbereiche werden unter Verwaltung angelegt.";
+    const sig=(area?.id||"")+":"+JSON.stringify(
+      (area?.item_ids||[]).map(id=>[id,stock.find(x=>x.item_id===id&&x.location_id===area.location_id)]));
+    if(this._lineSignature===sig)return;
+    this._lineSignature=sig;
+    const wrapper=this.$("group-items");wrapper.replaceChildren();
+    this._pending=null;
+    if(!area)return;
+    for(const id of area.item_ids){
+      const item=items.find(x=>x.id===id);
+      if(!item)continue;
+      const previous=stock.find(x=>x.item_id===id&&x.location_id===area.location_id);
+      const row=el("section",null,wrapper);
+      el("b",item.name+" ("+item.sku+")",row);
+      el("div","Buchbestand: "+(previous?.quantity??0)+" "+
+        (item.unit||"Stück")+(previous?.counted?"":" · noch nicht gezählt"),row,"hint");
+      const label=el("label","Istbestand",row);
+      const input=el("input",null,label);
+      input.type="number";input.step="1";input.min="0";input.max="1000000";
+      input.dataset.itemId=id;
+      input.value=previous ? String(previous.quantity):"";
+      input.placeholder="Noch nicht gezählt";
+      input.oninput=()=>{this._pending=null;this.$("submit").textContent="Inventur prüfen";this.$("preview").textContent="";};
+    }
+  }
+  async scanFile(file){
+    if(!file)return;
+    const url=URL.createObjectURL(file);
+    try{
+      const img=new Image();img.src=url;await img.decode();
+      const factor=Math.min(1,1300/Math.max(img.naturalWidth,img.naturalHeight));
+      const canvas=document.createElement("canvas");
+      canvas.width=Math.round(img.naturalWidth*factor);
+      canvas.height=Math.round(img.naturalHeight*factor);
+      canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+      const frame=canvas.getContext("2d").getImageData(0,0,canvas.width,canvas.height);
+      const decoded=window.jsQR?.(frame.data,frame.width,frame.height,
+        {inversionAttempts:"attemptBoth"})?.data;
+      if(!decoded)throw Error("Kein QR-Code erkannt");
+      const link=new URL(decoded);
+      const route=(this.config?.capture_path||DEFAULT_CAPTURE_PATH).replace(/\/$/,"");
+      if(!["http:","https:"].includes(link.protocol)||
+         link.pathname.replace(/\/$/,"")!==route)throw Error("Kein Mittelhof-QR-Link");
+      const areaId=link.searchParams.get("inventory_area");
+      if(!this.data.areas.some(a=>a.id===areaId))throw Error("Bereich existiert nicht");
+      this.$("area-select").value=areaId;
+      this._lineSignature="";this.update();
+      this.$("status").textContent="Bereich erkannt. Mengen prüfen und eintragen.";
+    }catch(err){this.$("status").textContent="QR-Fehler: "+(err?.message||err);}
+    finally {URL.revokeObjectURL(url);this.$("qr-file").value="";}
+  }
+  async saveGroup(){
+    if(this._busy)return;
+    const area=this.data.areas.find(a=>a.id===this.$("area-select").value);
+    if(!area){this.$("status").textContent="Inventurbereich auswählen.";return;}
+    const stock=this.data.stock;
+    const counts=[];
+    for(const input of this.$("group-items").querySelectorAll("input[data-item-id]")){
+      const raw=input.value.trim();
+      if(!raw)continue; // uncounted rows remain unknown, not silently zero
+      const q=Number(raw);
+      if(!Number.isSafeInteger(q)||q<0||q>1000000){
+        this.$("status").textContent="Ungültige Menge bei "+input.dataset.itemId;return;
+      }
+      const item_id=input.dataset.itemId;
+      const previous=stock.find(x=>x.item_id===item_id&&x.location_id===area.location_id);
+      counts.push({item_id,quantity:q,
+        expected_quantity:previous?.quantity??0,
+        expected_counted:!!previous?.counted});
+    }
+    if(!counts.length){this.$("status").textContent="Mindestens eine Menge eintragen.";return;}
+    const fingerprint=JSON.stringify({area_id:area.id,counts,note:this.$("group-note").value});
+    if(this._pending?.fingerprint!==fingerprint){
+      this._pending={fingerprint, payload:{area_id:area.id,counts,
+        idempotency_key:newTransactionId(),note:this.$("group-note").value}};
+      const changes=counts.filter(x=>x.quantity!==x.expected_quantity||!x.expected_counted).length;
+      this.$("preview").textContent=counts.length+" Positionen zur Inventur; "+
+        changes+" neu/abweichend. Bitte Werte kontrollieren und erneut bestätigen.";
+      this.$("submit").textContent="Inventur jetzt verbindlich speichern";
+      this.$("status").textContent="Noch nichts gespeichert.";
+      return;
+    }
+    const payload=this._pending.payload;
+    const ok=await this.action("count_area",payload,(reply,fresh)=>{
+      this._lineSignature="";this._pending=null;
+      this.$("preview").textContent="";
+      this.$("submit").textContent="Inventur prüfen";
+    });
+    if(ok)this.$("status").textContent="Inventur gespeichert und rückgelesen: "+
+      counts.length+" Positionen, Inventurbereich "+area.name+".";
+  }
+}
+
+class InventoryStructureAdmin extends InventoryBase {
+  render(){
+    this.innerHTML='<ha-card header="Kategorien, Inventurbereiche und Standorte"><div class="body">'
+      + '<section><h3>Kategorien</h3>'
+      + '<label>Neue Kategorie<input id="new-category" placeholder="z. B. Besteck" /></label>'
+      + '<button id="create-category">Kategorie hinzufügen</button>'
+      + '<label>Bestehende Kategorie<select id="category"></select></label>'
+      + '<label>Name bearbeiten<input id="category-name" /></label>'
+      + '<button id="save-category">Kategorie umbenennen</button>'
+      + '<label>Zum Löschen genau DELETE_CATEGORY:&lt;Name&gt; eingeben'
+      + '<input id="category-confirm" placeholder="DELETE_CATEGORY:Name" /></label>'
+      + '<button id="delete-category" class="danger">Unbenutzte Kategorie löschen</button>'
+      + '<div id="category-status" class="status" role="status"></div></section>'
+      + '<section><h3>Inventurbereich anlegen / bearbeiten</h3>'
+      + '<label>Inventurbereich<select id="area"></select></label>'
+      + '<label>Name des Bereichs<input id="area-name" placeholder="z. B. Besteckschublade" /></label>'
+      + '<div class="row"><label>Standort<select id="area-location"></select></label>'
+      + '<label>Kategorie<select id="area-category"></select></label></div>'
+      + '<div class="hint">Nur am Standort geführte Artikel der Kategorie auswählen; '
+      + 'pro Standort kann ein Artikel nur in einem Bereich geführt werden.</div>'
+      + '<div id="area-items"></div>'
+      + '<button id="save-area">Inventurbereich speichern</button>'
+      + '<label>Zum Löschen genau DELETE_AREA:&lt;Name&gt; eingeben'
+      + '<input id="area-confirm" placeholder="DELETE_AREA:Name" /></label>'
+      + '<button id="delete-area" class="danger">Inventurbereich löschen</button>'
+      + '<div id="area-status" class="status" role="status"></div></section>'
+      + '<section><h3>QR-Etiketten für Inventurbereiche</h3>'
+      + '<label>Vom Handy erreichbare Home-Assistant-Adresse'
+      + '<input id="qr-base" /></label>'
+      + '<label>Standortfilter<select id="qr-filter"></select></label>'
+      + '<button id="print-area">Bereichs-QR-Etiketten drucken</button>'
+      + '<div id="qr-status" class="status"></div></section>'
+      + '<section><h3>Standort entfernen</h3>'
+      + '<p class="hint">Nur Standorte ohne positiven Bestand können entfernt werden. '
+      + 'Sie verschwinden aus der Auswahl; alte Buchungen bleiben als Historie erhalten.</p>'
+      + '<label>Standort<select id="delete-location"></select></label>'
+      + '<div id="delete-location-info" class="hint"></div>'
+      + '<label>Bestätigung DELETE_LOCATION:&lt;Kürzel&gt;'
+      + '<input id="location-confirm" placeholder="DELETE_LOCATION:KÜRZEL" /></label>'
+      + '<button id="remove-location" class="danger">Standort entfernen</button>'
+      + '<div id="location-status" class="status" role="status"></div></section>'
+      + '</div></ha-card><style>'+css+'</style>';
+    for(const [id,fn] of [
+      ["create-category",()=>this.createCategory()],
+      ["save-category",()=>this.editCategory()],
+      ["delete-category",()=>this.deleteCategory()],
+      ["save-area",()=>this.saveArea()],
+      ["delete-area",()=>this.deleteArea()],
+      ["print-area",()=>this.printAreas()],
+      ["remove-location",()=>this.deleteLocation()]])
+      this.$(id).onclick=fn;
+    this.$("category").onchange=()=>{
+      const c=this.data.categories.find(x=>x.id===this.$("category").value);
+      this.$("category-name").value=c?.name||"";
+    };
+    this.$("area").onchange=()=>this.loadArea();
+    this.$("area-location").onchange=()=>this.renderAreaItems();
+    this.$("area-category").onchange=()=>this.renderAreaItems();
+    this.$("delete-location").onchange=()=>this.showLocationQty();
+    this.$("qr-base").value=window.location.origin;
+    this.refreshFromServer();
+  }
+  update(){
+    if(!this._ready)return;
+    const {categories,areas,locations}=this.data;
+    const categoriesActive=categories.filter(x=>x.active!==false);
+    refill(this.$("category"),categoriesActive,"name");
+    refill(this.$("area-category"),categoriesActive,"name");
+    refill(this.$("area-location"),locations,"name");
+    refill(this.$("delete-location"),locations,"name");
+    refill(this.$("qr-filter"),[{id:"",name:"Alle Standorte"},...locations],"name");
+    refill(this.$("area"),[{id:"",name:"— Neuen Bereich anlegen —"},...areas],"name");
+    this.$("category-name").value=
+      categories.find(x=>x.id===this.$("category").value)?.name||"";
+    this.loadArea();
+    this.showLocationQty();
+  }
+  loadArea(){
+    const area=this.data.areas.find(a=>a.id===this.$("area").value);
+    if(area?.id===this._loadedAreaId)return;
+    this._loadedAreaId=area?.id||"";
+    this.$("area-name").value=area?.name||"";
+    this.$("area-location").value=area?.location_id||"";
+    this.$("area-category").value=area?.category_id||"";
+    this.renderAreaItems();
+  }
+  renderAreaItems(){
+    const {items,areas}=this.data;
+    const box=this.$("area-items");box.replaceChildren();
+    const category=this.$("area-category").value;
+    const location=this.$("area-location").value;
+    const current=this.$("area").value;
+    const active=items.filter(i=>i.category_id===category &&
+      (i.location_ids||[]).includes(location) &&
+      !areas.some(a=>a.id!==current&&a.location_id===location&&a.item_ids.includes(i.id)));
+    for(const item of active){
+      const label=el("label",null,box);
+      const checkbox=el("input",null,label);
+      checkbox.type="checkbox";checkbox.value=item.id;checkbox.style.width="auto";
+      checkbox.checked=!!areas.find(a=>a.id===current)?.item_ids.includes(item.id);
+      label.append(" "+item.sku+" – "+item.name);
+    }
+    if(!active.length)el("div","Keine frei zuordnungsfähigen Artikel dieser Kategorie am gewählten Standort.",box,"hint");
+  }
+  showLocationQty(){
+    const id=this.$("delete-location").value;
+    const loc=this.data.locations.find(x=>x.id===id);
+    const rows=this.data.stock.filter(x=>x.location_id===id&&x.quantity>0);
+    const sum=rows.reduce((a,b)=>a+b.quantity,0);
+    this.$("delete-location-info").textContent=loc?
+      (sum?"Noch "+sum+" Einheiten in "+rows.length+" Bestandspositionen. Zuerst umlagern.":"Kein positiver Bestand. Löschen möglich.")
+      :"Standort auswählen.";
+  }
+  createCategory(){
+    const name=this.$("new-category").value.trim();
+    if(!name){this.$("category-status").textContent="Name fehlt.";return;}
+    this.action("create_category",{name},()=>{
+      this.$("new-category").value="";
+    },"category-status");
+  }
+  editCategory(){
+    const category_id=this.$("category").value,name=this.$("category-name").value.trim();
+    if(!category_id||!name){this.$("category-status").textContent="Kategorie und Name fehlen.";return;}
+    this.action("update_category",{category_id,name,active:true},null,"category-status");
+  }
+  deleteCategory(){
+    const c=this.data.categories.find(x=>x.id===this.$("category").value);
+    if(!c||this.$("category-confirm").value!=="DELETE_CATEGORY:"+c.name){
+      this.$("category-status").textContent="Bestätigung stimmt nicht.";return;
+    }
+    this.action("delete_category",{category_id:c.id,confirmation:this.$("category-confirm").value},
+      ()=>{this.$("category-confirm").value="";},"category-status");
+  }
+  saveArea(){
+    const id=this.$("area").value;
+    const name=this.$("area-name").value.trim(),location_id=this.$("area-location").value;
+    const category_id=this.$("area-category").value;
+    const item_ids=[...this.$("area-items").querySelectorAll("input:checked")].map(x=>x.value);
+    if(!name||!location_id||!category_id||!item_ids.length){
+      this.$("area-status").textContent="Name, Standort, Kategorie und mindestens ein Artikel erforderlich.";return;
+    }
+    const action=id?"update_area":"create_area";
+    const payload={name,location_id,category_id,item_ids};
+    if(id)payload.area_id=id;
+    this.action(action,payload,()=>{
+      this._loadedAreaId=null;
+    },"area-status");
+  }
+  deleteArea(){
+    const area=this.data.areas.find(x=>x.id===this.$("area").value);
+    if(!area||this.$("area-confirm").value!=="DELETE_AREA:"+area.name){
+      this.$("area-status").textContent="Bitte DELETE_AREA:<Name> exakt eingeben.";return;
+    }
+    this.action("delete_area",{area_id:area.id,confirmation:this.$("area-confirm").value},()=>{
+      this.$("area-confirm").value="";this._loadedAreaId=null;
+    },"area-status");
+  }
+  printAreas(){
+    try{
+      const {areas,locations}=this.data;
+      const base=this.$("qr-base").value.trim(),filter=this.$("qr-filter").value;
+      const rows=areas.filter(a=>!filter||a.location_id===filter).map(a=>({
+        name:(locations.find(x=>x.id===a.location_id)?.name||"?")+" · "+a.name,
+        sub:a.item_ids.length+" Artikel",
+        url:makeCaptureUrl(base,this.config?.capture_path||DEFAULT_CAPTURE_PATH,
+          {inventory_area:a.id})
+      }));
+      printLabels(rows);
+      this.$("qr-status").textContent=rows.length+" Inventurbereich-Etiketten vorbereitet.";
+    }catch(err){this.$("qr-status").textContent=err?.message||String(err);}
+  }
+  deleteLocation(){
+    const loc=this.data.locations.find(x=>x.id===this.$("delete-location").value);
+    if(!loc||this.$("location-confirm").value!=="DELETE_LOCATION:"+loc.code){
+      this.$("location-status").textContent="Bitte DELETE_LOCATION:<Kürzel> exakt eingeben.";return;
+    }
+    this.action("delete_location",{
+      location_id:loc.id,confirmation:this.$("location-confirm").value
+    },()=>{this.$("location-confirm").value="";},"location-status");
+  }
+}
+
 const all = [
   ["mittelhof-inventory-overview",InventoryOverview],
   ["mittelhof-inventory-capture",InventoryCapture],
   ["mittelhof-inventory-admin",InventoryAdmin],
+  ["mittelhof-inventory-area-capture",InventoryAreaCapture],
+  ["mittelhof-inventory-structure-admin",InventoryStructureAdmin],
   ["mittelhof-inventory-card",InventoryCapture],  // Backwards-compatible dashboard alias.
 ];
 for(const [name,kind] of all){
