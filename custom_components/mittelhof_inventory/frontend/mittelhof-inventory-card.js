@@ -10,8 +10,8 @@ class MittelhofInventoryCard extends HTMLElement {
     this.innerHTML = `<ha-card header="Mittelhof Inventar"><div class="content">
       <div class="status" id="status" aria-live="polite"></div>
       <section><h3>Bestand buchen</h3><label>Artikel <select id="item"></select></label><label>Standort <select id="loc"></select></label>
-      <label>Art <select id="kind"><option value="consume">Entnahme</option><option value="receipt">Zugang</option></select></label>
-      <label>Menge <input id="quantity" type="number" min="1" value="1"></label><button id="book">Buchen</button></section>
+      <label>Buchungsart <select id="kind"><option value="consume">Verbrauch / Entnahme</option><option value="receipt">Neuer Wareneingang (erhöht Gesamtbestand)</option><option value="transfer">Umlagerung (Bestand verteilen)</option></select></label>
+      <label id="source-wrap">Von Standort <select id="source"></select></label><label id="target-wrap">Nach Standort <select id="target"></select></label><label>Menge <input id="quantity" type="number" min="1" step="1" value="1"></label><button id="book">Buchen</button></section>
       <section><h3>Neuer Artikel</h3><label>Artikelnummer <input id="sku"></label><label>Name <input id="itemname"></label>
       <label>Einheit <input id="unit" value="Stück"></label><button id="additem">Artikel anlegen</button></section>
       <section><h3>Neuer Standort</h3><label>Kürzel <input id="code"></label><label>Name <input id="locname"></label>
@@ -31,18 +31,42 @@ class MittelhofInventoryCard extends HTMLElement {
       .status{min-height:1.5rem;color:var(--primary-text-color)}
       </style>`;
     const $ = id => this.querySelector('#'+id);
-    const send = async (service, data) => {
+    const send = async (service, data, onSuccess) => {
       if (!this._hass) return;
       $('status').textContent='Verarbeite ...';
       try { await this._hass.callService('mittelhof_inventory', service, data);
         $('status').textContent='Gespeichert. Sensoraktualisierung folgt.';
+        if (onSuccess) onSuccess();
       } catch (error) { $('status').textContent='Fehler: '+String(error?.message || error); }
     };
-    $('book').onclick=()=>send('book_transaction',{
-      kind:$('kind').value,item_id:$('item').value,
-      from_location_id:$('kind').value==='consume'?$('loc').value:undefined,
-      to_location_id:$('kind').value==='receipt'?$('loc').value:undefined,
-      quantity:Number($('quantity').value)});
+    const syncMode = () => {
+      const kind=$('kind').value;
+      $('source-wrap').style.display=(kind==='consume'||kind==='transfer')?'block':'none';
+      $('target-wrap').style.display=(kind==='receipt'||kind==='transfer')?'block':'none';
+    };
+    $('kind').addEventListener('change',syncMode);
+    syncMode();
+    $('book').onclick=async()=>{
+      const kind=$('kind').value, quantity=Number($('quantity').value);
+      if (!Number.isSafeInteger(quantity) || quantity<1) {
+        $('status').textContent='Bitte eine positive ganze Menge eingeben.';return;
+      }
+      const src=kind==='consume'||kind==='transfer' ? $('source').value : undefined;
+      const dst=kind==='receipt'||kind==='transfer' ? $('target').value : undefined;
+      if (!($('item').value) || (kind!=='receipt'&&!src) || (kind!=='consume'&&!dst) ||
+          (kind==='transfer'&&src===dst)) {
+        $('status').textContent='Artikel und gültige Standorte auswählen.';return;
+      }
+      await send('book_transaction',{
+        kind,item_id:$('item').value,from_location_id:src,
+        to_location_id:dst,quantity
+      },()=>{
+        $('quantity').value='1';
+        $('item').selectedIndex=-1;
+        $('source').selectedIndex=-1;
+        $('target').selectedIndex=-1;
+      });
+    };
     $('additem').onclick=()=>send('create_item',{sku:$('sku').value,name:$('itemname').value,unit:$('unit').value});
     $('addloc').onclick=()=>send('create_location',{code:$('code').value,name:$('locname').value});
     $('policy').onclick=()=>send('set_stock_policy',{
@@ -58,12 +82,13 @@ class MittelhofInventoryCard extends HTMLElement {
     const items = records(this.config.items_entity || 'sensor.inventar_artikel', 'artikel');
     const locations = records(this.config.locations_entity || 'sensor.inventar_standorte', 'standorte');
     const $ = id => this.querySelector('#'+id);
-    for (const [id, data, label] of [['item', items, 'name'],['loc', locations, 'name']]) {
+    for (const [id, data, label] of [['item', items, 'name'],['loc', locations, 'name'],['source',locations,'name'],['target',locations,'name']]) {
       const el=$(id), value=el.value, signatures=data.map(x=>x.id).join();
       if (el.dataset.signature===signatures) continue;
       el.replaceChildren();
       for(const x of data) {const opt=document.createElement('option');opt.value=x.id;opt.textContent=x[label];el.appendChild(opt);}
       if(data.some(x=>x.id===value)) el.value=value;
+      else el.selectedIndex=-1;
       el.dataset.signature=signatures;
     }
     const stock=records(this.config.stock_entity || 'sensor.inventar_bestandspositionen', 'bestandspositionen');
@@ -99,7 +124,7 @@ class MittelhofInventoryCard extends HTMLElement {
       for (const item of [...items].sort((a,b)=>a.name.localeCompare(b.name,'de'))) {
         const tr=document.createElement('tr');
         const quantities=locs.map(loc=>quantityByKey.get(item.id+'|'+loc.id)||0);
-        const cells=[item.name+' ('+item.unit+')',...quantities.map(String),String(quantities.reduce((a,b)=>a+b,0))];
+        const cells=[(item.sku||'—')+' – '+item.name+' ('+item.unit+')',...quantities.map(String),String(quantities.reduce((a,b)=>a+b,0))];
         cells.forEach((value,index)=>{const td=document.createElement('td');td.textContent=value;
           td.style.cssText='padding:8px;border-bottom:1px solid var(--divider-color);'+(index?'text-align:right;':'');tr.appendChild(td);});
         body.appendChild(tr);
