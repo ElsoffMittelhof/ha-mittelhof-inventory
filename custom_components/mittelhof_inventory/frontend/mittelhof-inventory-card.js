@@ -1,7 +1,7 @@
 import "./vendor/qrgen.js";
 import "./vendor/jsQR.js";
 
-/* Mittelhof Inventar 1.0.1 – local-only HA cards. No remote QR endpoints. */
+/* Mittelhof Inventar 1.0.2 – local-only HA cards. No remote QR endpoints. */
 const DOMAIN = "mittelhof_inventory";
 const DEFAULT_CAPTURE_PATH = "/inventar-dashboard/erfassung";
 const css = `
@@ -200,61 +200,128 @@ class InventoryBase extends HTMLElement {
   }
 }
 
+// Stock is kept per article and location; areas are presentation/grouping only.
+// No separate area stock is created, so displaying multiple areas cannot duplicate it.
+function buildOverviewGroups(items, locations, stock, areas, categories, selectedIds) {
+  const active = new Set(selectedIds);
+  const itemById = new Map(items.map(i => [i.id, i]));
+  const categoryById = new Map(categories.map(c => [c.id,c.name]));
+  const stockByPair = new Map(stock.map(r => [r.item_id+"|"+r.location_id,r]));
+  return locations.filter(l => active.has(l.id)).map(location => {
+    const groups = areas.filter(a => a.location_id === location.id && a.active !== false)
+      .sort((a,b) => a.name.localeCompare(b.name, "de")).map(area => {
+        const rows = [...new Set(area.item_ids||[])].map(id => itemById.get(id))
+          .filter(item => item && (item.location_ids||[]).includes(location.id))
+          .sort((a,b) => (a.sku||"").localeCompare(b.sku||"", "de"))
+          .map(item => {
+            const current = stockByPair.get(item.id+"|"+location.id);
+            return {id:item.id, sku:item.sku, name:item.name, unit:item.unit,
+              quantity:current?.quantity ?? null, counted:!!current?.counted};
+          });
+        const counted = rows.filter(r=>r.counted).length;
+        const uncounted = rows.length-counted;
+        const total = rows.filter(r=>r.counted).reduce((n,r)=>n+Number(r.quantity||0),0);
+        return {id:area.id,name:area.name,category:categoryById.get(area.category_id)||"",
+          rows,counted,uncounted,total};
+      });
+    return {id:location.id,name:location.name,groups};
+  });
+}
+
 class InventoryOverview extends InventoryBase {
   render() {
-    this.innerHTML = '<ha-card header="Bestandsübersicht"><div class="body">'
-      + '<div id="notice" class="hint"></div><label>Standorte filtern <select id="filter"></select></label>'
-      + '<div id="summary" class="hint"></div><div id="table" class="scroll"></div>'
-      + '<div id="sug" class="hint"></div></div></ha-card><style>'+css+'</style>';
-    const filter=this.$("filter");
-    filter.onchange=()=>this.update();
+    this.innerHTML='<ha-card header="Bestandsübersicht nach Standorten und Inventurbereichen"><div class="body">'
+      + '<div id="notice" class="hint"></div>'
+      + '<div><strong>Standorte auswählen</strong>'
+      + '<div id="location-choices" class="row"></div>'
+      + '<button id="all" type="button">Alle Standorte</button>'
+      + '<button id="none" type="button">Auswahl aufheben</button></div>'
+      + '<div id="summary" class="hint"></div>'
+      + '<div id="area-overview"></div></div></ha-card><style>'+css+'</style>';
+    this.$("all").onclick=()=>{
+      this._selectedLocationIds=new Set(this.data.locations.map(x=>x.id));
+      this._locationSignature=null;this.update();
+    };
+    this.$("none").onclick=()=>{
+      this._selectedLocationIds=new Set();
+      this._locationSignature=null;this.update();
+    };
   }
   update() {
-    if (!this._ready) return;
-    const {items,locations,stock,suggestions} = this.data;
-    const filter=this.$("filter");
-    refill(filter, [{id:"",name:"Alle Standorte"},...locations],"name");
-    const locs=locations.filter(x=>!filter.value||filter.value===x.id);
-    const lookup = new Map(stock.map(s=>[s.item_id+"|"+s.location_id,s]));
-    const div=this.$("table"); div.replaceChildren();
-    if (!items.length || !locations.length) {
-      div.textContent="Noch keine Artikel oder Standorte vorhanden.";return;
+    if(!this._ready)return;
+    const {items,locations,stock,areas,categories} = this.data;
+    if(!this._selectedLocationIds)
+      this._selectedLocationIds=new Set(locations.map(x=>x.id));
+    const valid=new Set(locations.map(x=>x.id));
+    this._selectedLocationIds=new Set([...this._selectedLocationIds].filter(id=>valid.has(id)));
+    const signature=locations.map(x=>x.id+"|"+x.name).join(";");
+    if(signature!==this._locationSignature){
+      this._locationSignature=signature;
+      const choices=this.$("location-choices");choices.replaceChildren();
+      for(const location of locations){
+        const label=el("label",null,choices);
+        label.style.display="flex";label.style.alignItems="center";label.style.gap="8px";
+        const checkbox=el("input",null,label);
+        checkbox.type="checkbox";checkbox.value=location.id;checkbox.style.width="auto";
+        checkbox.checked=this._selectedLocationIds.has(location.id);
+        checkbox.onchange=()=>{
+          if(checkbox.checked)this._selectedLocationIds.add(location.id);
+          else this._selectedLocationIds.delete(location.id);
+          this.update();
+        };
+        label.append(" "+location.name);
+      }
     }
-    const table=el("table",null,div), head=el("thead",null,table), hr=el("tr",null,head);
-    for(const name of ["Artikelnummer","Artikel","Einheit",...locs.map(x=>x.name),"Gesamt"]) {
-      el("th",name,hr);
-    }
-    const body=el("tbody",null,table);
-    let counted=0, total=0, unknown=0;
-    for(const item of [...items].sort((a,b)=>a.sku.localeCompare(b.sku,"de"))) {
-      const tr=el("tr",null,body);
-      el("td",item.sku,tr);el("td",item.name,tr);el("td",item.unit,tr);
-      let rowtotal=0,complete=true;
-      let assignedCount=0;
-      for(const loc of locs) {
-        const rec=lookup.get(item.id+"|"+loc.id);
-        const td=el("td","",tr,"num");
-        if(!(item.location_ids||[]).includes(loc.id)){
-          td.textContent="n. a.";
-          td.title="Artikel ist diesem Standort nicht zugeordnet";
+    for(const checkbox of this.$("location-choices").querySelectorAll("input[type=checkbox]"))
+      checkbox.checked=this._selectedLocationIds.has(checkbox.value);
+
+    const wrapper=this.$("area-overview");wrapper.replaceChildren();
+    const groups=buildOverviewGroups(items,locations,stock,areas,categories,this._selectedLocationIds);
+    const areaGroups=groups.flatMap(g=>g.groups);
+    const totalRows=areaGroups.flatMap(g=>g.rows);
+    const counted=totalRows.filter(r=>r.counted).length;
+    const uncounted=totalRows.length-counted;
+    const knownUnits=totalRows.filter(r=>r.counted).reduce((n,r)=>n+Number(r.quantity||0),0);
+    this.$("summary").textContent=
+      "Standorte: "+groups.length+" · Inventurbereiche: "+areaGroups.length+
+      " · Artikelpositionen: "+totalRows.length+" · Gezählt: "+counted+
+      " · Noch nicht gezählt: "+uncounted+
+      " · Erfasste Einheiten: "+knownUnits+(uncounted?" (noch unvollständig)":"");
+    if(!groups.length){el("p","Bitte mindestens einen Standort auswählen.",wrapper,"hint");return;}
+    for(const group of groups) {
+      const section=el("section",null,wrapper);
+      el("h3",group.name,section);
+      if(!group.groups.length){
+        el("p","Noch keine Inventurbereiche für diesen Standort angelegt.",section,"hint");
+        continue;
+      }
+      for(const area of group.groups){
+        const panel=el("div",null,section);
+        panel.style.margin="12px 0 18px";
+        el("h4",area.name+(area.category?" · "+area.category:""),panel);
+        if(!area.rows.length){
+          el("p","Diesem Inventurbereich sind noch keine aktiven Artikel zugeordnet.",panel,"hint");
           continue;
         }
-        assignedCount++;
-        if (!rec?.counted) {
-          td.textContent=rec ? String(rec.quantity)+" (ungeprüft)" : "—";
-          td.title="Noch nicht inventarisiert";complete=false;unknown++;
-        } else {
-          td.textContent=String(rec.quantity);counted++;rowtotal+=Number(rec.quantity)||0;
+        const scroll=el("div",null,panel,"scroll");
+        const table=el("table",null,scroll),head=el("thead",null,table),hr=el("tr",null,head);
+        for(const title of ["Artikelnummer","Artikel","Einheit","Bestand"])el("th",title,hr);
+        const body=el("tbody",null,table);
+        for(const item of area.rows){
+          const tr=el("tr",null,body);
+          el("td",item.sku||"—",tr);
+          el("td",item.name,tr);
+          el("td",item.unit||"Stück",tr);
+          const td=el("td",item.quantity===null?"—":String(item.quantity)+(item.counted?"":" (ungeprüft)"),tr,"num");
+          if(!item.counted)td.title="Noch nicht inventarisiert";
         }
+        el("p",area.counted+" gezählt · "+area.uncounted+
+          " ungezählt · "+area.total+" erfasste Einheiten",panel,"hint");
       }
-      el("td",assignedCount?(complete?String(rowtotal):(rowtotal?rowtotal+" + ?":"—")):"n. a.",tr,"num");
-      total+=rowtotal;
     }
-    this.$("summary").textContent=
-      "Erfasste Positionen: "+counted+" · Noch nicht gezählt: "+unknown+
-      " · Gezählt: "+total+" Einheiten"+(unknown?" (Gesamtbestand noch unvollständig)":"");
-    const sug=this.$("sug");
-    sug.textContent = suggestions.length ? "Nachbestellhinweise: "+suggestions.length : "";
+    this.$("notice").textContent=
+      "Angezeigt werden ausschließlich Artikel aus den Inventurbereichen der gewählten Standorte. "+
+      "Nicht zugeordnete Artikel werden hier nicht gelistet.";
   }
 }
 
