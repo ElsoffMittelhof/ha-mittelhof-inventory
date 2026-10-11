@@ -146,7 +146,7 @@ class InventoryBase extends HTMLElement {
       if (!fresh || !Array.isArray(fresh.items)) throw Error("Gespeichert, aber der neue Bestand konnte nicht gelesen werden");
       this._verifiedData = fresh;
       if (success) success(reply, fresh);
-      this.update();
+      try { this.update(); } finally { this._verifiedData = null; }
       const msg = service === "set_count"
         ? "Gespeichert und geprüft: " + reply.stored_quantity + " Stück. Buchungs-ID: " +
           (reply.result?.id || "nicht verfügbar")
@@ -455,19 +455,37 @@ class InventoryAdmin extends InventoryBase {
       + '<label>Artikelnummer: wird automatisch vergeben</label>'
       + '<label>Bezeichnung<input id="name"></label>'
       + '<label>Einheit<input id="unit" value="Stück"></label>'
+      + '<label>Hersteller (optional)<input id="manufacturer"></label>'
+      + '<label>Genaue Produktbezeichnung / Modell (optional)<input id="product-name"></label>'
       + '<label>Kategorie<select id="category"><option>Allgemein</option><option>Geschirr</option>'
       + '<option>Verbrauchsmaterial</option><option>Reinigungsmittel</option>'
       + '<option>Werkzeug</option><option>Gartengerät</option></select></label></div>'
       + '<div class="hint">Artikel an diesen Standorten führen:</div>'
       + '<div id="new-locations"></div>'
       + '<button id="additem">Artikel anlegen</button></section>'
+      + '<section><h3>Artikeldetails bearbeiten</h3>'
+      + '<label>Artikel auswählen<select id="edit-item"></select></label>'
+      + '<label>Artikelname<input id="edit-name"></label>'
+      + '<label>Einheit<input id="edit-unit"></label>'
+      + '<label>Hersteller (optional)<input id="edit-manufacturer"></label>'
+      + '<label>Genaue Produktbezeichnung / Modell (optional)<input id="edit-product-name"></label>'
+      + '<button id="save-item">Artikeldetails speichern</button>'
+      + '<div id="item-status" class="status" role="status" aria-live="polite"></div></section>'
       + '<section><h3>Artikel-Standorte bearbeiten</h3>'
       + '<label>Artikel<select id="assigned-item"></select></label>'
       + '<div id="assignment-list"></div>'
       + '<button id="save-assignment">Zuordnung speichern</button>'
       + '<div class="hint">Standorte mit Bestand können nicht entfernt werden.</div></section>'
       + '<section><h3>Standort anlegen</h3><div class="row"><label>Kürzel<input id="code"></label>'
-      + '<label>Name<input id="locname"></label></div><button id="addloc">Standort anlegen</button></section>'
+      + '<label>Name<input id="locname"></label></div>'
+      + '<label>Schnellvorlage<select id="location-preset">'
+      + '<option value="">Standort auswählen …</option>'
+      + '<option value="GARAGE1">Garage 1</option><option value="GARAGE2">Garage 2</option>'
+      + '<option value="CARPORT">Carport</option><option value="WERKSTATT">Werkstatt</option>'
+      + '<option value="STALL">Stall</option><option value="GARTENHAUS">Gartenhaus</option>'
+      + '<option value="WASCHKUECHE">Waschküche</option><option value="DACHBODEN">Dachboden</option>'
+      + '</select></label><button id="addloc">Standort anlegen</button>'
+      + '<div id="location-status" class="status" role="status" aria-live="polite"></div></section>'
       + '<section><h3>Mindest- und Sollbestand</h3><div class="row">'
       + '<label>Artikel<select id="item"></select></label><label>Standort<select id="loc"></select></label>'
       + '<label>Minimum<input id="min" type="number" min="0" value="2"></label>'
@@ -490,6 +508,14 @@ class InventoryAdmin extends InventoryBase {
       + '<button id="reset" class="danger">Gesamtbestand zurücksetzen</button></section>'
       + '<div id="status" class="status" role="status"></div></div></ha-card><style>'+css+'</style>';
     this.$("additem").onclick=()=>this.createItem();
+    this.$("edit-item").onchange=()=>this.loadEditItem();
+    this.$("save-item").onclick=()=>this.saveItem();
+    this.$("location-preset").onchange=()=>{
+      const sel=this.$("location-preset");
+      if(!sel.value)return;
+      this.$("code").value=sel.value;
+      this.$("locname").value=sel.selectedOptions[0]?.textContent||"";
+    };
     this.$("addloc").onclick=()=>this.createLocation();
     this.$("policy").onclick=()=>this.policy();
     this.$("assigned-item").onchange=()=>{this._editorSignature="";this.renderAssignments();};
@@ -505,6 +531,8 @@ class InventoryAdmin extends InventoryBase {
     refill(this.$("item"),items,"name");
     refill(this.$("delete-item"),items,"name");
     refill(this.$("assigned-item"),items,"name");
+    refill(this.$("edit-item"),items,"name");
+    this.loadEditItem();
     refill(this.$("loc"),locations,"name");
     refill(this.$("group"),[{id:"",name:"Alle Standorte"},...locations],"name");
     const newLoc=this.$("new-locations");
@@ -519,6 +547,25 @@ class InventoryAdmin extends InventoryBase {
       }
     }
     this.renderAssignments();
+  }
+  loadEditItem(){
+    const item=this.data.items.find(x=>x.id===this.$("edit-item").value);
+    if(this._editingId===(item?.id||""))return;
+    this._editingId=item?.id||"";
+    this.$("edit-name").value=item?.name||"";
+    this.$("edit-unit").value=item?.unit||"Stück";
+    this.$("edit-manufacturer").value=item?.manufacturer||"";
+    this.$("edit-product-name").value=item?.product_name||"";
+  }
+  saveItem(){
+    const item_id=this.$("edit-item").value;
+    const name=this.$("edit-name").value.trim();
+    if(!item_id||!name){this.$("item-status").textContent="Artikel und Name angeben.";return;}
+    this.action("update_item",{
+      item_id,name,unit:this.$("edit-unit").value.trim()||"Stück",
+      manufacturer:this.$("edit-manufacturer").value.trim(),
+      product_name:this.$("edit-product-name").value.trim()
+    },null,"item-status");
   }
   renderAssignments(){
     const {items,locations}=this.data;
@@ -548,8 +595,9 @@ class InventoryAdmin extends InventoryBase {
     const location_ids=[...this.$("new-locations").querySelectorAll("input:checked")].map(x=>x.value);
     if(!location_ids.length){this.$("status").textContent="Mindestens einen Standort wählen.";return;}
     this.action("create_item",{name,unit:this.$("unit").value.trim()||"Stück",
-      category:this.$("category").value,location_ids},()=>{
-        this.$("name").value="";
+      category:this.$("category").value,manufacturer:this.$("manufacturer").value.trim(),
+      product_name:this.$("product-name").value.trim(),location_ids},()=>{
+        this.$("name").value="";this.$("manufacturer").value="";this.$("product-name").value="";
         for(const cb of this.$("new-locations").querySelectorAll("input"))cb.checked=false;
       });
   }
@@ -557,7 +605,7 @@ class InventoryAdmin extends InventoryBase {
     const code=this.$("code").value.trim(),name=this.$("locname").value.trim();
     if(!code||!name){this.$("status").textContent="Kürzel und Namen angeben.";return;}
     this.action("create_location",{code,name},
-      ()=>{this.$("code").value="";this.$("locname").value="";});
+      ()=>{this.$("code").value="";this.$("locname").value="";this.$("location-preset").value="";},"location-status");
   }
   policy(){
     const item_id=this.$("item").value,location_id=this.$("loc").value;
