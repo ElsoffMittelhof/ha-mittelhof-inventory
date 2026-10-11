@@ -168,3 +168,98 @@ update_item:
       selector: {text: {}}
     product_name:
       selector: {text: {}}
+
+create_category:
+  name: Kategorie hinzufügen
+  description: Legt eine neue frei verwaltbare Artikelkategorie an (Administrator).
+  fields:
+    name:
+      required: true
+      selector: {text: {}}
+update_category:
+  name: Kategorie ändern
+  fields:
+    category_id:
+      required: true
+      selector: {text: {}}
+    name:
+      required: true
+      selector: {text: {}}
+    active:
+      selector: {boolean: {}}
+delete_category:
+  name: Ungenutzte Kategorie löschen
+  fields:
+    category_id:
+      required: true
+      selector: {text: {}}
+    confirmation:
+      required: true
+      selector: {text: {}}
+create_area:
+  name: Inventurbereich anlegen
+  description: Eine Kategorie mit ausgewählten Artikeln am Standort als QR-Gruppe führen.
+  fields:
+    name:
+      required: true
+      selector: {text: {}}
+    location_id:
+      required: true
+      selector: {text: {}}
+    category_id:
+      required: true
+      selector: {text: {}}
+    item_ids:
+      required: true
+      selector: {object: {}}
+update_area:
+  name: Inventurbereich ändern
+  fields:
+    area_id:
+      required: true
+      selector: {text: {}}
+    name:
+      required: true
+      selector: {text: {}}
+    location_id:
+      required: true
+      selector: {text: {}}
+    category_id:
+      required: true
+      selector: {text: {}}
+    item_ids:
+      required: true
+      selector: {object: {}}
+delete_area:
+  name: Inventurbereich deaktivieren
+  fields:
+    area_id:
+      required: true
+      selector: {text: {}}
+    confirmation:
+      required: true
+      selector: {text: {}}
+count_area:
+  name: Gesamten Inventurbereich zählen
+  description: Alle ausgewählten Artikelbestände atomar speichern; bei Konflikt kein Teilbestand.
+  fields:
+    area_id:
+      required: true
+      selector: {text: {}}
+    counts:
+      required: true
+      selector: {object: {}}
+    idempotency_key:
+      selector: {text: {}}
+    note:
+      selector: {text: {}}
+delete_location:
+  name: Standort sicher entfernen
+  description: Entfernt nur Standorte ohne positiven Bestand aus der Anzeige. Historische Buchungen bleiben erhalten.
+  fields:
+    location_id:
+      required: true
+      selector: {text: {}}
+    confirmation:
+      required: true
+      selector: {text: {}}
