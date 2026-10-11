@@ -15,6 +15,10 @@ from .store import InventoryStore, InventoryError
 PLATFORMS = ["sensor"]
 LOCATION_SCHEMA = vol.Schema({vol.Required("code"): cv.string, vol.Required("name"): cv.string})
 ITEM_SCHEMA = vol.Schema({vol.Required("name"): cv.string, vol.Optional("unit", default="Stück"): cv.string, vol.Optional("category", default="Allgemein"): cv.string, vol.Optional("location_ids", default=[]): vol.All(cv.ensure_list, [cv.string])})
+ASSIGN_BULK_SCHEMA = vol.Schema({
+    vol.Required("item_id"): cv.string,
+    vol.Required("location_ids"): vol.All(cv.ensure_list, [cv.string]),
+})
 ASSIGN_SCHEMA = vol.Schema({
     vol.Required("item_id"): cv.string,
     vol.Required("location_id"): cv.string,
@@ -37,7 +41,7 @@ RESET_STOCK_SCHEMA = vol.Schema({
     vol.Required("confirmation"): cv.string,
 })
 TRANSACTION_SCHEMA = vol.Schema({vol.Required("kind"): vol.In(["receipt", "consume", "transfer", "adjustment_in", "adjustment_out"]), vol.Required("item_id"): cv.string, vol.Optional("from_location_id"): cv.string, vol.Optional("to_location_id"): cv.string, vol.Required("quantity"): vol.All(vol.Coerce(int), vol.Range(min=1, max=1000000)), vol.Optional("note", default=""): cv.string, vol.Optional("idempotency_key"): cv.string})
-SCHEMAS = {"create_item": ITEM_SCHEMA, "create_location": LOCATION_SCHEMA, "set_stock_policy": POLICY_SCHEMA, "book_transaction": TRANSACTION_SCHEMA, "set_count": COUNT_SCHEMA, "delete_item": DELETE_ITEM_SCHEMA, "reset_stock": RESET_STOCK_SCHEMA, "set_item_location": ASSIGN_SCHEMA}
+SCHEMAS = {"create_item": ITEM_SCHEMA, "create_location": LOCATION_SCHEMA, "set_stock_policy": POLICY_SCHEMA, "book_transaction": TRANSACTION_SCHEMA, "set_count": COUNT_SCHEMA, "delete_item": DELETE_ITEM_SCHEMA, "reset_stock": RESET_STOCK_SCHEMA, "set_item_location": ASSIGN_SCHEMA, "set_item_locations": ASSIGN_BULK_SCHEMA}
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = InventoryStore(hass)
@@ -54,7 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["_frontend_registered"] = True
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    admin_actions = {"create_item", "create_location", "set_stock_policy", "set_item_location", "set_count", "delete_item", "reset_stock"}
+    admin_actions = {"create_item", "create_location", "set_stock_policy", "set_item_location", "set_item_locations", "set_count", "delete_item", "reset_stock"}
     for name, schema in SCHEMAS.items():
         if hass.services.has_service(DOMAIN, name):
             continue
