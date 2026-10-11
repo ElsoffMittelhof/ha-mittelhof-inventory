@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -30,15 +31,68 @@ class InventoryStore:
         self.data = content if isinstance(content, dict) else {}
         for key in ("items", "locations", "policies", "transactions", "audit"):
             self.data.setdefault(key, [])
-        for key in ("stock", "counted"):
+        for key in ("stock", "counted", "item_locations"):
             self.data.setdefault(key, {})
+        # Idempotent additive migration of existing stock, counts, and reorder rules.
+        self._migrate(self.data)
+        # Existing location IDs are retained. Missing defaults are added without reindexing.
+        defaults = (("13", "Haus 13"), ("14", "Haus 14"),
+                    ("15", "Haus 15"), ("LAGER", "Lager"))
+        for code, name in defaults:
+            if not any(x["code"].casefold() == code.casefold() for x in self.data["locations"]):
+                self.data["locations"].append({"id": str(uuid4()), "code": code, "name": name})
+        # Migration/defaults are durably saved before mutations are allowed.
+        await self._store.async_save(self.data)
         if any(not isinstance(self.data[k], dict) for k in ("stock", "counted")):
             raise InventoryError("Ungültiges Bestandsformat")
         if any(not isinstance(self.data[k], list) for k in ("items", "locations", "policies", "transactions", "audit")):
             raise InventoryError("Ungültiges Inventarformat")
 
+    @staticmethod
+    def _migrate(db):
+        db.setdefault("item_locations", {})
+        db.setdefault("stock", {})
+        db.setdefault("counted", {})
+        db.setdefault("policies", [])
+        db.setdefault("items", [])
+        db.setdefault("locations", [])
+        db.setdefault("transactions", [])
+        db.setdefault("audit", [])
+        seq = max(1, int(db.get("next_item_number", 1)))
+        for item in db["items"]:
+            # Retain legacy SKUs; never change IDs referenced by an old QR or ledger.
+            match = re.fullmatch(r"A-(\\d+)", item.get("sku", ""))
+            if match:
+                seq = max(seq, int(match.group(1)) + 1)
+            item.setdefault("category", "Allgemein")
+        db["next_item_number"] = seq
+        old = set(db["stock"]) | set(db["counted"]) | {
+            p["item_id"] + "|" + p["location_id"] for p in db["policies"]
+        }
+        valid_i = {i["id"] for i in db["items"]}
+        valid_l = {l["id"] for l in db["locations"]}
+        for key in old:
+            pair = key.split("|", 1)
+            if len(pair) == 2 and pair[0] in valid_i and pair[1] in valid_l:
+                db["item_locations"].setdefault(key, {"id": str(uuid4()),
+                    "item_id": pair[0], "location_id": pair[1]})
+
+    @staticmethod
+    def _assigned(db, item_id, location_id):
+        return item_id + "|" + location_id in db["item_locations"]
+
+    @staticmethod
+    def _assign(db, item_id, location_id):
+        key = item_id + "|" + location_id
+        db["item_locations"].setdefault(key, {"id": str(uuid4()),
+            "item_id": item_id, "location_id": location_id})
+
     def snapshot(self):
         items = copy.deepcopy(self.data["items"])
+        for item in items:
+            item["location_ids"] = [l["location_id"]
+                for l in self.data["item_locations"].values()
+                if l["item_id"] == item["id"]]
         locations = copy.deepcopy(self.data["locations"])
         names = {item["id"]: item["name"] for item in items}
         places = {loc["id"]: loc["name"] for loc in locations}
@@ -54,7 +108,7 @@ class InventoryStore:
         suggestions = []
         for p in self.data["policies"]:
             key = p["item_id"] + "|" + p["location_id"]
-            if key not in self.data["counted"]:
+            if key not in self.data["counted"] or key not in self.data["item_locations"] :
                 continue  # Unknown is not zero: do not create false reorder suggestions.
             quantity = self.data["stock"].get(key, 0)
             if quantity < p["min_quantity"]:
@@ -80,16 +134,45 @@ class InventoryStore:
 
     @staticmethod
     def _apply(db, operation, p):
-        for key in ("audit", "counted"):
-            db.setdefault(key, [] if key == "audit" else {})
+        InventoryStore._migrate(db)
         if operation == "create_item":
-            sku, name = p["sku"].strip(), p["name"].strip()
-            if not sku or not name or any(x["sku"].casefold() == sku.casefold() for x in db["items"]):
-                raise InventoryError("Artikelnummer/Name fehlt oder Artikelnummer bereits vorhanden")
+            name = p["name"].strip()
+            if not name:
+                raise InventoryError("Artikelname fehlt")
+            selected = p.get("location_ids", [])
+            loc_ids = {x["id"] for x in db["locations"]}
+            if len(set(selected)) != len(selected) or any(x not in loc_ids for x in selected):
+                raise InventoryError("Ungültige oder doppelte Standortauswahl")
+            seq = db["next_item_number"]
+            occupied = {x["sku"].casefold() for x in db["items"]}
+            sku = f"A-{seq:06d}"
+            while sku.casefold() in occupied:
+                seq += 1
+                sku = f"A-{seq:06d}"
+            db["next_item_number"] = seq + 1
             entity = {"id": str(uuid4()), "sku": sku, "name": name,
-                      "unit": p.get("unit", "Stück").strip() or "Stück"}
+                      "unit": p.get("unit", "Stück").strip() or "Stück",
+                      "category": p.get("category", "Allgemein").strip() or "Allgemein"}
             db["items"].append(entity)
+            for loc in selected:
+                InventoryStore._assign(db, entity["id"], loc)
             return entity
+        if operation == "set_item_location":
+            item_id, location_id = p["item_id"], p["location_id"]
+            if item_id not in {x["id"] for x in db["items"]} or location_id not in {x["id"] for x in db["locations"]}:
+                raise InventoryError("Unbekannter Artikel oder Standort")
+            key = item_id + "|" + location_id
+            if p["assigned"]:
+                InventoryStore._assign(db, item_id, location_id)
+            else:
+                if db["stock"].get(key, 0):
+                    raise InventoryError("Standort hat Bestand. Vor Aufhebung auf einen anderen Standort umlagern oder Bestand korrigieren.")
+                db["item_locations"].pop(key, None)
+                db["stock"].pop(key, None)
+                db["counted"].pop(key, None)
+                db["policies"] = [x for x in db["policies"] if
+                                  (x["item_id"], x["location_id"]) != (item_id, location_id)]
+            return True
         if operation == "create_location":
             code, name = p["code"].strip(), p["name"].strip()
             if not code or not name or any(x["code"].casefold() == code.casefold() for x in db["locations"]):
@@ -115,6 +198,9 @@ class InventoryStore:
                 raise InventoryError("Bestätigung muss DELETE:<Artikelnummer> lauten")
             ident = item["id"]
             db["items"] = [x for x in db["items"] if x["id"] != ident]
+            for key in list(db["item_locations"]):
+                if key.split("|", 1)[0] == ident:
+                    del db["item_locations"][key]
             db["policies"] = [x for x in db["policies"] if x["item_id"] != ident]
             db["transactions"] = [x for x in db["transactions"] if x["item_id"] != ident]
             for key in list(db["stock"]):
@@ -134,6 +220,8 @@ class InventoryStore:
         if operation == "set_stock_policy":
             if p["location_id"] not in location_ids:
                 raise InventoryError("Unbekannter Standort")
+            if not InventoryStore._assigned(db, p["item_id"], p["location_id"]):
+                raise InventoryError("Artikel ist diesem Standort nicht zugeordnet")
             if p["target_quantity"] < p["min_quantity"]:
                 raise InventoryError("Sollbestand muss mindestens dem Mindestbestand entsprechen")
             db["policies"] = [x for x in db["policies"]
@@ -146,6 +234,8 @@ class InventoryStore:
             if location not in location_ids:
                 raise InventoryError("Unbekannter Standort")
             key = p["item_id"] + "|" + location
+            if not InventoryStore._assigned(db, p["item_id"], location):
+                raise InventoryError("Artikel ist diesem Standort nicht zugeordnet")
             previous = db["stock"].get(key, 0)
             identity = p["idempotency_key"]
             prior_tx = next((t for t in db["transactions"] if t.get("idempotency_key") == identity), None)
@@ -184,6 +274,10 @@ class InventoryStore:
             raise InventoryError("Zielstandort erforderlich")
         if kind == "transfer" and (src not in location_ids or dst not in location_ids or src == dst):
             raise InventoryError("Zwei unterschiedliche Standorte erforderlich")
+        if src and not InventoryStore._assigned(db, p["item_id"], src):
+            raise InventoryError("Artikel ist dem Quellstandort nicht zugeordnet")
+        if dst and not InventoryStore._assigned(db, p["item_id"], dst):
+            raise InventoryError("Artikel ist dem Zielstandort nicht zugeordnet")
         if src:
             key = p["item_id"] + "|" + src
             existing = db["stock"].get(key, 0)
