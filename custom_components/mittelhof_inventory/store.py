@@ -1,4 +1,4 @@
-"""Single-writer, locally persisted inventory and initial stocktake."""
+"""Mittelhof inventory v2: physical-area stock ledger, no legacy stock import."""
 from __future__ import annotations
 
 import asyncio
@@ -9,149 +9,91 @@ from uuid import uuid4
 
 from homeassistant.helpers.storage import Store
 
+# Separate storage key: v1 legacy item/location totals cannot be safely transformed.
 STORAGE_VERSION = 1
+STORAGE_KEY = "mittelhof_inventory_v2.data"
+DEFAULT_LOCATIONS = [
+    ("13", "Ferienhaus 13"), ("14", "Ferienhaus 14"), ("15", "Ferienhaus 15"),
+    ("GARAGE1", "Garage 1"), ("GARAGE2", "Garage 2"), ("CARPORT", "Carport"),
+    ("WERKSTATT", "Werkstatt"), ("STALL", "Stall"),
+    ("GARTENHAUS", "Gartenhaus"), ("WASCHKUECHE", "Waschküche"),
+    ("DACHBODEN", "Dachboden"),
+]
+MAX_QUANTITY = 1_000_000
 
 
 class InventoryError(ValueError):
-    """Invalid inventory operation."""
+    """Rejected inventory operation."""
 
 
-def now():
+def timestamp():
     return datetime.now(timezone.utc).isoformat()
+
+
+def fresh_data():
+    return {
+        "items": [],
+        "categories": [{"id": str(uuid4()), "name": "Allgemein"}],
+        "locations": [
+            {"id": str(uuid4()), "code": code, "name": name}
+            for code, name in DEFAULT_LOCATIONS
+        ],
+        "templates": [], "instances": [], "assignments": {},
+        "stock": {}, "counted": {}, "transactions": [], "batches": [],
+        "audit": [], "next_item_number": 1,
+    }
 
 
 class InventoryStore:
     def __init__(self, hass):
-        self._store = Store(hass, STORAGE_VERSION, "mittelhof_inventory.data")
+        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._lock = asyncio.Lock()
         self.data = {}
 
     async def load(self):
-        content = await self._store.async_load()
-        self.data = content if isinstance(content, dict) else {}
-        for key in ("items", "locations", "policies", "transactions", "audit"):
-            self.data.setdefault(key, [])
-        for key in ("stock", "counted", "item_locations"):
-            self.data.setdefault(key, {})
-        # Idempotent additive migration of existing stock, counts, and reorder rules.
-        self._migrate(self.data)
-        # Existing location IDs are retained. Missing defaults are added without reindexing.
-        defaults = (("13", "Haus 13"), ("14", "Haus 14"),
-                    ("15", "Haus 15"), ("LAGER", "Lager"))
-        for code, name in defaults:
-            if not any(x["code"].casefold() == code.casefold() for x in self.data["locations"]):
-                self.data["locations"].append({"id": str(uuid4()), "code": code, "name": name})
-        # Migration/defaults are durably saved before mutations are allowed.
-        await self._store.async_save(self.data)
-        if any(not isinstance(self.data[k], dict) for k in ("stock", "counted")):
-            raise InventoryError("Ungültiges Bestandsformat")
-        if any(not isinstance(self.data[k], list) for k in ("items", "locations", "policies", "transactions", "audit")):
-            raise InventoryError("Ungültiges Inventarformat")
-
-    @staticmethod
-    def _migrate(db):
-        db.setdefault("item_locations", {})
-        db.setdefault("stock", {})
-        db.setdefault("counted", {})
-        db.setdefault("policies", [])
-        db.setdefault("items", [])
-        db.setdefault("locations", [])
-        db.setdefault("transactions", [])
-        db.setdefault("audit", [])
-        initialize_categories = "categories" not in db
-        db.setdefault("categories", [])
-        db.setdefault("areas", [])
-        db.setdefault("group_batches", [])
-        if initialize_categories:
-            defaults=("Allgemein", "Geschirr", "Verbrauchsmaterial",
-                      "Reinigungsmittel", "Werkzeug", "Gartengerät")
-            names=list(defaults)
-            names.extend(x.get("category","Allgemein").strip() or "Allgemein"
-                         for x in db["items"])
-            # Seed only once; deleted categories must stay deleted.
-            for name in dict.fromkeys(names):
-                db["categories"].append({"id":str(uuid4()),"name":name,"active":True})
-        for loc in db["locations"]:
-            loc.setdefault("active",True)
-        seq = max(1, int(db.get("next_item_number", 1)))
-        for item in db["items"]:
-            # Retain legacy SKUs; never change IDs referenced by an old QR or ledger.
-            match = re.fullmatch(r"A-(\d+)", item.get("sku", ""))
-            if match:
-                seq = max(seq, int(match.group(1)) + 1)
-            item.setdefault("category", "Allgemein")
-            item.setdefault("manufacturer", "")
-            item.setdefault("product_name", "")
-            if not item.get("category_id") or not any(
-                c["id"]==item["category_id"] for c in db["categories"]):
-                match_cat=next((c for c in db["categories"]
-                    if c["name"].casefold()==item["category"].casefold()),None)
-                item["category_id"]=(match_cat or db["categories"][0])["id"]
-        db["next_item_number"] = seq
-        old = set(db["stock"]) | set(db["counted"]) | {
-            p["item_id"] + "|" + p["location_id"] for p in db["policies"]
-        }
-        valid_i = {i["id"] for i in db["items"]}
-        valid_l = {l["id"] for l in db["locations"]}
-        for key in old:
-            pair = key.split("|", 1)
-            if len(pair) == 2 and pair[0] in valid_i and pair[1] in valid_l:
-                db["item_locations"].setdefault(key, {"id": str(uuid4()),
-                    "item_id": pair[0], "location_id": pair[1]})
-
-    @staticmethod
-    def _assigned(db, item_id, location_id):
-        return item_id + "|" + location_id in db["item_locations"]
-
-    @staticmethod
-    def _assign(db, item_id, location_id):
-        key = item_id + "|" + location_id
-        db["item_locations"].setdefault(key, {"id": str(uuid4()),
-            "item_id": item_id, "location_id": location_id})
+        loaded = await self._store.async_load()
+        self.data = loaded if loaded is not None else fresh_data()
+        required_lists = ("items", "categories", "locations", "templates",
+                          "instances", "transactions", "batches", "audit")
+        required_maps = ("assignments", "stock", "counted")
+        if any(not isinstance(self.data.get(k), list) for k in required_lists) or any(
+            not isinstance(self.data.get(k), dict) for k in required_maps
+        ):
+            raise InventoryError("Ungültiges Inventar-v2-Datenformat")
+        if not isinstance(self.data.get("next_item_number"), int):
+            raise InventoryError("Ungültiger Artikelnummernzähler")
+        if loaded is None:
+            await self._store.async_save(self.data)
 
     def snapshot(self):
-        items = copy.deepcopy(self.data["items"])
-        for item in items:
-            item["location_ids"] = [l["location_id"]
-                for l in self.data["item_locations"].values()
-                if l["item_id"] == item["id"] and
-                any(loc["id"]==l["location_id"] and loc.get("active",True)
-                    for loc in self.data["locations"])]
-        locations = [copy.deepcopy(loc) for loc in self.data["locations"] if loc.get("active",True)]
-        names = {item["id"]: item["name"] for item in items}
-        places = {loc["id"]: loc["name"] for loc in locations}
+        db = self.data
+        items = copy.deepcopy(db["items"])
+        locations = copy.deepcopy(db["locations"])
+        templates = copy.deepcopy(db["templates"])
+        instances = copy.deepcopy(db["instances"])
+        cats = copy.deepcopy(db["categories"])
+        by_item = {x["id"]: x for x in items}
+        by_instance = {x["id"]: x for x in instances}
         stock = []
-        for key, quantity in self.data["stock"].items():
-            item_id, location_id = key.split("|", 1)
-            if location_id not in places:
+        for key in db["assignments"]:
+            item_id, instance_id = key.split("|", 1)
+            item, instance = by_item.get(item_id), by_instance.get(instance_id)
+            if not item or not instance:
                 continue
             stock.append({
-                "item_id": item_id, "location_id": location_id,
-                "name": names.get(item_id, "?"), "location": places.get(location_id, "?"),
-                "quantity": quantity, "counted": key in self.data["counted"],
-                "counted_at": self.data["counted"].get(key),
+                "item_id": item_id, "instance_id": instance_id,
+                "location_id": instance["location_id"],
+                "quantity": db["stock"].get(key),
+                "counted": key in db["counted"],
+                "counted_at": db["counted"].get(key),
+                "name": item["name"], "sku": item["sku"], "unit": item["unit"],
+                "category_id": item["category_id"],
             })
-        suggestions = []
-        for p in self.data["policies"]:
-            key = p["item_id"] + "|" + p["location_id"]
-            if key not in self.data["counted"] or key not in self.data["item_locations"] or p["location_id"] not in places:
-                continue  # Unknown is not zero: do not create false reorder suggestions.
-            quantity = self.data["stock"].get(key, 0)
-            if quantity < p["min_quantity"]:
-                needed = max(0, p["target_quantity"] - quantity)
-                multiple = p["reorder_multiple"]
-                proposed = ((needed + multiple - 1) // multiple) * multiple
-                suggestions.append({
-                    "item_id": p["item_id"], "location_id": p["location_id"],
-                    "name": names.get(p["item_id"], "?"),
-                    "location": places.get(p["location_id"], "?"),
-                    "quantity": quantity, "suggested_quantity": proposed,
-                })
-        return {"items": items, "locations": locations, "stock": stock,
-                "suggestions": suggestions, "policies": copy.deepcopy(self.data["policies"]),
-                "categories":copy.deepcopy(self.data["categories"]),
-                "areas":[copy.deepcopy(a) for a in self.data["areas"]
-                         if a["location_id"] in places and a.get("active",True)]}
+        return {
+            "items": items, "categories": cats, "locations": locations,
+            "templates": templates, "instances": instances,
+            "stock": stock, "transactions_count": len(db["transactions"]),
+        }
 
     async def mutate(self, operation, payload):
         async with self._lock:
@@ -162,380 +104,314 @@ class InventoryStore:
             return result
 
     @staticmethod
-    def _apply(db, operation, p):
-        InventoryStore._migrate(db)
-        if operation == "create_item":
+    def _find(db, collection, ident):
+        item = next((x for x in db[collection] if x["id"] == ident), None)
+        if item is None:
+            raise InventoryError(f"Nicht gefunden: {collection}")
+        return item
+
+    @staticmethod
+    def _name(db, collection, name, exclude=None):
+        name = name.strip()
+        if not name or any(x["name"].casefold() == name.casefold()
+                           for x in db[collection] if x["id"] != exclude):
+            raise InventoryError("Name fehlt oder ist bereits vergeben")
+        return name
+
+    @staticmethod
+    def _key(item_id, instance_id):
+        return f"{item_id}|{instance_id}"
+
+    @staticmethod
+    def _has_stock(db, instance_id=None, item_id=None):
+        for key, value in db["stock"].items():
+            i, area = key.split("|", 1)
+            if (instance_id is None or area == instance_id) and (
+                item_id is None or i == item_id
+            ) and value > 0:
+                return True
+        return False
+
+    @staticmethod
+    def _check_qty(value, allow_zero=True):
+        if isinstance(value, bool) or not isinstance(value, int) or (
+            value < (0 if allow_zero else 1) or value > MAX_QUANTITY
+        ):
+            raise InventoryError("Ungültige Menge")
+        return value
+
+    @classmethod
+    def _apply(cls, db, op, p):
+        if op == "create_category":
+            cat = {"id": str(uuid4()), "name": cls._name(db, "categories", p["name"])}
+            db["categories"].append(cat)
+            return cat
+        if op == "update_category":
+            cat = cls._find(db, "categories", p["category_id"])
+            cat["name"] = cls._name(db, "categories", p["name"], cat["id"])
+            return copy.deepcopy(cat)
+        if op == "delete_category":
+            ident = p["category_id"]
+            cls._find(db, "categories", ident)
+            if any(x["category_id"] == ident for x in db["items"]):
+                raise InventoryError("Kategorie wird von Artikeln verwendet")
+            db["categories"] = [c for c in db["categories"] if c["id"] != ident]
+            return True
+
+        if op == "create_item":
+            cat = cls._find(db, "categories", p["category_id"])
             name = p["name"].strip()
             if not name:
                 raise InventoryError("Artikelname fehlt")
-            selected = p.get("location_ids", [])
-            loc_ids = {x["id"] for x in db["locations"] if x.get("active",True)}
-            if len(set(selected)) != len(selected) or any(x not in loc_ids for x in selected):
-                raise InventoryError("Ungültige oder doppelte Standortauswahl")
             seq = db["next_item_number"]
-            occupied = {x["sku"].casefold() for x in db["items"]}
             sku = f"A-{seq:06d}"
-            while sku.casefold() in occupied:
-                seq += 1
-                sku = f"A-{seq:06d}"
-            db["next_item_number"] = seq + 1
-            cat_id = p.get("category_id")
-            if cat_id:
-                category = next((x for x in db["categories"]
-                                 if x["id"] == cat_id and x.get("active",True)), None)
-            else:
-                category = next((x for x in db["categories"]
-                                 if x["name"] == (p.get("category") or "Allgemein")), None)
-            if category is None:
-                raise InventoryError("Unbekannte oder deaktivierte Kategorie")
-            entity = {"id": str(uuid4()), "sku": sku, "name": name,
-                      "unit": p.get("unit", "Stück").strip() or "Stück",
-                      "category": category["name"], "category_id":category["id"],
-                      "manufacturer": p.get("manufacturer", "").strip(),
-                      "product_name": p.get("product_name", "").strip()}
-            db["items"].append(entity)
-            for loc in selected:
-                InventoryStore._assign(db, entity["id"], loc)
-            return entity
-        if operation == "update_item":
-            item = next((x for x in db["items"] if x["id"] == p["item_id"]), None)
-            if item is None:
-                raise InventoryError("Artikel nicht gefunden")
+            db["next_item_number"] += 1
+            item = {
+                "id": str(uuid4()), "sku": sku, "name": name,
+                "unit": p.get("unit", "Stück").strip() or "Stück",
+                "category_id": cat["id"],
+                "manufacturer": p.get("manufacturer", "").strip(),
+                "product_name": p.get("product_name", "").strip(),
+            }
+            db["items"].append(item)
+            return item
+        if op == "update_item":
+            item = cls._find(db, "items", p["item_id"])
+            cls._find(db, "categories", p["category_id"])
             name = p["name"].strip()
             if not name:
                 raise InventoryError("Artikelname fehlt")
-            cat_id = p.get("category_id", item["category_id"])
-            category = next((x for x in db["categories"]
-                    if x["id"]==cat_id and x.get("active",True)),None)
-            if category is None:
-                raise InventoryError("Unbekannte Kategorie")
-            # Assigned area must continue to match its category.
-            if any(item["id"] in area["item_ids"] and area["category_id"] != cat_id
-                   for area in db["areas"]):
-                raise InventoryError("Artikel zuerst aus dem bisherigen Inventurbereich entfernen")
-            item.update({"name": name, "category":category["name"],
-                         "category_id":cat_id,
-                         "unit": p.get("unit", "Stück").strip() or "Stück",
-                         "manufacturer": p.get("manufacturer", "").strip(),
-                         "product_name": p.get("product_name", "").strip()})
-            db["audit"].append({"id": str(uuid4()), "action": "update_item",
-                                "at": now(), "item_id": item["id"], "actor": p.get("actor")})
+            item.update({
+                "name": name, "category_id": p["category_id"],
+                "unit": p.get("unit", "Stück").strip() or "Stück",
+                "manufacturer": p.get("manufacturer", "").strip(),
+                "product_name": p.get("product_name", "").strip(),
+            })
             return copy.deepcopy(item)
-        if operation == "set_item_locations":
+        if op == "delete_item":
             item_id = p["item_id"]
-            wanted = p["location_ids"]
-            if item_id not in {x["id"] for x in db["items"]}:
-                raise InventoryError("Artikel unbekannt")
-            valid = {x["id"] for x in db["locations"] if x.get("active",True)}
-            if len(set(wanted)) != len(wanted) or any(loc not in valid for loc in wanted):
-                raise InventoryError("Ungültige oder doppelte Standorte")
-            old = {v["location_id"] for v in db["item_locations"].values()
-                   if v["item_id"] == item_id}
-            for loc in old - set(wanted):
-                if any(a["location_id"]==loc and item_id in a["item_ids"] for a in db["areas"]):
-                    raise InventoryError("Artikel zuerst aus dem Inventurbereich entfernen")
-                if db["stock"].get(item_id + "|" + loc, 0):
-                    raise InventoryError("Bestand vorhanden: Standort zuerst leeren")
-            for loc in old - set(wanted):
-                key = item_id + "|" + loc
-                db["item_locations"].pop(key, None)
-                db["stock"].pop(key, None)
-                db["counted"].pop(key, None)
-            db["policies"] = [x for x in db["policies"]
-                              if x["item_id"] != item_id or x["location_id"] in wanted]
-            for loc in wanted:
-                InventoryStore._assign(db, item_id, loc)
+            cls._find(db, "items", item_id)
+            if cls._has_stock(db, item_id=item_id):
+                raise InventoryError("Artikel hat noch Bestand; vorher ausbuchen")
+            db["items"] = [i for i in db["items"] if i["id"] != item_id]
+            for key in list(db["assignments"]):
+                if key.split("|", 1)[0] == item_id:
+                    db["assignments"].pop(key)
+                    db["stock"].pop(key, None)
+                    db["counted"].pop(key, None)
+            db["audit"].append({"at": timestamp(), "action": op,
+                                "item_id": item_id, "actor": p.get("actor")})
             return True
-        if operation == "set_item_location":
-            item_id, location_id = p["item_id"], p["location_id"]
-            if item_id not in {x["id"] for x in db["items"]} or location_id not in {x["id"] for x in db["locations"] if x.get("active",True)}:
-                raise InventoryError("Unbekannter Artikel oder Standort")
-            key = item_id + "|" + location_id
-            if p["assigned"]:
-                InventoryStore._assign(db, item_id, location_id)
-            else:
-                if any(a["location_id"]==location_id and item_id in a["item_ids"] for a in db["areas"]):
-                    raise InventoryError("Artikel zuerst aus dem Inventurbereich entfernen")
-                if db["stock"].get(key, 0):
-                    raise InventoryError("Standort hat Bestand. Vor Aufhebung auf einen anderen Standort umlagern oder Bestand korrigieren.")
-                db["item_locations"].pop(key, None)
-                db["stock"].pop(key, None)
-                db["counted"].pop(key, None)
-                db["policies"] = [x for x in db["policies"] if
-                                  (x["item_id"], x["location_id"]) != (item_id, location_id)]
+
+        if op == "create_location":
+            name = cls._name(db, "locations", p["name"])
+            code = p["code"].strip().upper()
+            if not re.fullmatch(r"[A-Z0-9_-]{1,32}", code) or any(
+                x["code"] == code for x in db["locations"]
+            ):
+                raise InventoryError("Standortcode ungültig oder doppelt")
+            loc = {"id": str(uuid4()), "name": name, "code": code}
+            db["locations"].append(loc)
+            return loc
+        if op == "update_location":
+            loc = cls._find(db, "locations", p["location_id"])
+            loc["name"] = cls._name(db, "locations", p["name"], loc["id"])
+            return copy.deepcopy(loc)
+        if op == "delete_location":
+            loc = cls._find(db, "locations", p["location_id"])
+            instance_ids = [a["id"] for a in db["instances"]
+                            if a["location_id"] == loc["id"]]
+            if any(cls._has_stock(db, instance_id=ident) for ident in instance_ids):
+                raise InventoryError("Standort hat noch Bestand; zuerst umlagern/ausbuchen")
+            for ident in instance_ids:
+                cls._drop_instance(db, ident)
+            db["locations"] = [x for x in db["locations"] if x["id"] != loc["id"]]
+            db["audit"].append({"at": timestamp(), "action": op,
+                                "location": copy.deepcopy(loc), "actor": p.get("actor")})
             return True
-        if operation == "create_location":
-            code, name = p["code"].strip(), p["name"].strip()
-            if not code or not name or any(x["code"].casefold() == code.casefold() or x["name"].casefold() == name.casefold() for x in db["locations"]):
-                raise InventoryError("Standortkürzel/Name fehlt oder Kürzel bereits vorhanden")
-            entity = {"id": str(uuid4()), "code": code, "name": name, "active":True}
-            db["locations"].append(entity)
-            return entity
-        if operation == "delete_location":
-            loc=next((x for x in db["locations"] if x["id"]==p["location_id"]
-                      and x.get("active",True)),None)
-            if loc is None:
-                raise InventoryError("Standort existiert nicht oder wurde bereits entfernt")
-            if p["confirmation"]!="DELETE_LOCATION:"+loc["code"]:
-                raise InventoryError("Bestätigung muss DELETE_LOCATION:"+loc["code"]+" lauten")
-            positive={key:q for key,q in db["stock"].items()
-                      if key.split("|",1)[-1]==loc["id"] and q>0}
-            if positive:
-                raise InventoryError("Standort enthält noch Bestand ("+str(sum(positive.values()))+
-                                     " Einheiten). Vorher umlagern oder korrigieren.")
-            loc["active"]=False  # Preserve IDs/history; omit from active UI and pickers.
-            for key in list(db["item_locations"]):
-                if db["item_locations"][key]["location_id"]==loc["id"]:
-                    del db["item_locations"][key]
-            for key in list(db["stock"]):
-                if key.split("|",1)[-1]==loc["id"]:
-                    del db["stock"][key]
-            for key in list(db["counted"]):
-                if key.split("|",1)[-1]==loc["id"]:
-                    del db["counted"][key]
-            db["policies"]=[x for x in db["policies"] if x["location_id"]!=loc["id"]]
-            for area in db["areas"]:
-                if area["location_id"]==loc["id"]:
-                    area["active"]=False
-            db["audit"].append({"id":str(uuid4()),"at":now(),"action":"delete_location",
-                                "location_id":loc["id"],"name":loc["name"],
-                                "actor":p.get("actor")})
-            return True
-        if operation == "create_category":
-            name=p["name"].strip()
-            if not name or any(c["name"].casefold()==name.casefold()
-                               for c in db["categories"]):
-                raise InventoryError("Kategoriename fehlt oder bereits vorhanden")
-            obj={"id":str(uuid4()),"name":name,"active":True}
-            db["categories"].append(obj)
+
+        if op == "create_template":
+            obj = {"id": str(uuid4()),
+                   "name": cls._name(db, "templates", p["name"])}
+            db["templates"].append(obj)
             return obj
-        if operation == "update_category":
-            category=next((c for c in db["categories"] if c["id"]==p["category_id"]),None)
-            if category is None:
-                raise InventoryError("Kategorie existiert nicht")
-            name=p["name"].strip()
-            if not name or any(c["id"]!=category["id"] and c["name"].casefold()==name.casefold()
-                               for c in db["categories"]):
-                raise InventoryError("Kategoriename fehlt oder bereits vorhanden")
-            active=p.get("active",True)
-            if not active and (any(i["category_id"]==category["id"] for i in db["items"])
-                              or any(a["category_id"]==category["id"] for a in db["areas"])):
-                raise InventoryError("Genutzte Kategorie kann nicht deaktiviert werden")
-            category.update({"name":name,"active":active})
-            for item in db["items"]:
-                if item["category_id"]==category["id"]:
-                    item["category"]=name
-            return copy.deepcopy(category)
-        if operation == "delete_category":
-            category=next((c for c in db["categories"] if c["id"]==p["category_id"]),None)
-            if category is None:
-                raise InventoryError("Kategorie existiert nicht")
-            if p["confirmation"]!="DELETE_CATEGORY:"+category["name"]:
-                raise InventoryError("Bestätigungswort falsch")
-            if any(i["category_id"]==category["id"] for i in db["items"]) or any(
-                a["category_id"]==category["id"] for a in db["areas"]):
-                raise InventoryError("Kategorie wird noch von Artikeln/Inventurbereichen genutzt")
-            db["categories"]=[c for c in db["categories"] if c["id"]!=category["id"]]
+        if op == "update_template":
+            obj = cls._find(db, "templates", p["template_id"])
+            obj["name"] = cls._name(db, "templates", p["name"], obj["id"])
+            return copy.deepcopy(obj)
+        if op == "delete_template":
+            ident = p["template_id"]
+            cls._find(db, "templates", ident)
+            if any(a["template_id"] == ident for a in db["instances"]):
+                raise InventoryError("Vorlage hat physische Inventurbereiche; zuerst entfernen")
+            db["templates"] = [x for x in db["templates"] if x["id"] != ident]
             return True
-        if operation in ("create_area","update_area"):
-            area = next((a for a in db["areas"] if a["id"]==p.get("area_id")),None) if operation=="update_area" else None
-            if operation=="update_area" and area is None:
-                raise InventoryError("Inventurbereich nicht gefunden")
-            loc=p["location_id"]
-            if loc not in {x["id"] for x in db["locations"] if x.get("active",True)}:
-                raise InventoryError("Inventurbereich benötigt aktiven Standort")
-            category_id=p["category_id"]
-            if not any(x["id"]==category_id and x.get("active",True)
-                       for x in db["categories"]):
-                raise InventoryError("Unbekannte Kategorie")
-            items=p["item_ids"]
-            if not items or len(items)!=len(set(items)):
-                raise InventoryError("Mindestens ein eindeutiger Artikel pro Bereich erforderlich")
-            catalog={x["id"]:x for x in db["items"]}
-            for ident in items:
-                if ident not in catalog or catalog[ident]["category_id"]!=category_id or not InventoryStore._assigned(db,ident,loc):
-                    raise InventoryError("Artikel passt nicht zur Kategorie oder zum Standort")
-                if any(a["id"] != (area or {}).get("id") and a["location_id"]==loc
-                       and a.get("active",True) and ident in a["item_ids"] for a in db["areas"]):
-                    raise InventoryError("Artikel bereits einem anderen Inventurbereich dieses Standorts zugeordnet")
-            name=p["name"].strip()
-            if not name or any(a["location_id"]==loc and a["name"].casefold()==name.casefold()
-                               and a["id"]!=(area or {}).get("id") and a.get("active",True) for a in db["areas"]):
-                raise InventoryError("Bereichsname fehlt oder bereits an diesem Standort vorhanden")
-            if area is None:
-                area={"id":str(uuid4()),"active":True}
-                db["areas"].append(area)
-            area.update({"location_id":loc,"category_id":category_id,
-                         "item_ids":list(items),"name":name})
-            return copy.deepcopy(area)
-        if operation == "delete_area":
-            area=next((a for a in db["areas"] if a["id"]==p["area_id"]
-                       and a.get("active",True)),None)
-            if area is None:
-                raise InventoryError("Inventurbereich nicht gefunden")
-            if p["confirmation"]!="DELETE_AREA:"+area["name"]:
-                raise InventoryError("Bestätigung für Inventurbereich fehlt")
-            area["active"]=False  # Stable historic ID; old QR cannot open deactivated area.
+
+        if op == "assign_template":
+            template_id = p["template_id"]
+            cls._find(db, "templates", template_id)
+            ids = p["location_ids"]
+            if not ids or len(set(ids)) != len(ids):
+                raise InventoryError("Standorte fehlen oder sind doppelt")
+            for ident in ids:
+                cls._find(db, "locations", ident)
+            made = []
+            for loc in ids:
+                prior = next((x for x in db["instances"] if
+                              x["template_id"] == template_id and
+                              x["location_id"] == loc and not x.get("label")), None)
+                if prior:
+                    made.append(copy.deepcopy(prior))
+                else:
+                    instance = {"id": str(uuid4()), "template_id": template_id,
+                                "location_id": loc, "label": ""}
+                    db["instances"].append(instance)
+                    made.append(copy.deepcopy(instance))
+            return made
+        if op == "create_instance":
+            cls._find(db, "templates", p["template_id"])
+            cls._find(db, "locations", p["location_id"])
+            label = p.get("label", "").strip()
+            if not label:
+                raise InventoryError("Für einen zusätzlichen gleichartigen Bereich ist ein Unterscheidungsname nötig")
+            if any(x["template_id"] == p["template_id"] and
+                   x["location_id"] == p["location_id"] and x.get("label") == label
+                   for x in db["instances"]):
+                raise InventoryError("Physischer Bereich bereits vorhanden")
+            obj = {"id": str(uuid4()), "template_id": p["template_id"],
+                   "location_id": p["location_id"], "label": label}
+            db["instances"].append(obj)
+            return obj
+        if op == "delete_instance":
+            instance_id = p["instance_id"]
+            cls._find(db, "instances", instance_id)
+            if cls._has_stock(db, instance_id=instance_id):
+                raise InventoryError("Bereich enthält Bestand; zuerst umlagern/ausbuchen")
+            cls._drop_instance(db, instance_id)
+            db["audit"].append({"at": timestamp(), "action": op,
+                                "instance_id": instance_id, "actor": p.get("actor")})
             return True
-        if operation == "count_area":
-            area=next((a for a in db["areas"] if a["id"]==p["area_id"]
-                       and a.get("active",True)),None)
-            if area is None:
-                raise InventoryError("Inventurbereich nicht aktiv")
-            identity=p["idempotency_key"]
-            previous=next((x for x in db["group_batches"] if x["idempotency_key"]==identity),None)
+        if op == "set_instance_items":
+            instance_id = p["instance_id"]
+            cls._find(db, "instances", instance_id)
+            item_ids = p["item_ids"]
+            if len(set(item_ids)) != len(item_ids):
+                raise InventoryError("Artikel mehrfach zugeordnet")
+            for ident in item_ids:
+                cls._find(db, "items", ident)
+            old = [key for key in db["assignments"]
+                   if key.split("|", 1)[1] == instance_id]
+            wanted = {cls._key(ident, instance_id) for ident in item_ids}
+            for key in old:
+                if key not in wanted and db["stock"].get(key, 0) > 0:
+                    raise InventoryError("Artikel hat noch Bestand im Bereich")
+            for key in old:
+                if key not in wanted:
+                    db["assignments"].pop(key)
+                    db["stock"].pop(key, None)
+                    db["counted"].pop(key, None)
+            for key in wanted:
+                db["assignments"].setdefault(key, True)
+            return True
+
+        if op == "count_instance":
+            instance_id = p["instance_id"]
+            cls._find(db, "instances", instance_id)
+            key_id = p["idempotency_key"]
+            previous = next((b for b in db["batches"] if b["idempotency_key"] == key_id), None)
             if previous:
-                if previous["area_id"]!=area["id"] or previous["counts"]!=p["counts"]:
-                    raise InventoryError("Idempotenzschlüssel anderweitig vergeben")
+                if previous["instance_id"] != instance_id or previous["counts"] != p["counts"]:
+                    raise InventoryError("Idempotenzschlüssel mehrfach verwendet")
                 return copy.deepcopy(previous)
-            counts=p["counts"]
-            if not counts or len(counts)>200:
-                raise InventoryError("Eine Inventurgruppe benötigt 1–200 Positionen")
-            ids=[x["item_id"] for x in counts]
-            if len(ids)!=len(set(ids)) or any(x not in area["item_ids"] for x in ids):
-                raise InventoryError("Doppelte oder fremde Artikel im Inventurbereich")
-            loc=area["location_id"]
-            for row in counts:
-                key=row["item_id"]+"|"+loc
-                if not InventoryStore._assigned(db,row["item_id"],loc):
-                    raise InventoryError("Artikel nicht mehr dem Standort zugeordnet")
-                if db["stock"].get(key,0)!=row["expected_quantity"] or (
-                    key in db["counted"])!=row["expected_counted"]:
-                    raise InventoryError("Bestand von Artikel "+row["item_id"]+
-                                         " zwischenzeitlich geändert; neu laden und erneut prüfen")
-            at=now()
-            batch_id=str(uuid4())
-            for row in counts:
-                key=row["item_id"]+"|"+loc
-                old=db["stock"].get(key,0)
-                db["stock"][key]=row["quantity"]
-                db["counted"][key]=at
+            rows = p["counts"]
+            if not rows or len(rows) > 200 or len({r["item_id"] for r in rows}) != len(rows):
+                raise InventoryError("Ungültige Inventurliste")
+            for row in rows:
+                cls._check_qty(row["quantity"])
+                key = cls._key(row["item_id"], instance_id)
+                if key not in db["assignments"]:
+                    raise InventoryError("Artikel nicht diesem Inventurbereich zugeordnet")
+                if (db["stock"].get(key, 0) != row["expected_quantity"] or
+                    (key in db["counted"]) != row["expected_counted"]):
+                    raise InventoryError("Bestand zwischenzeitlich geändert – aktualisieren")
+            batch_id = str(uuid4())
+            at = timestamp()
+            for row in rows:
+                key = cls._key(row["item_id"], instance_id)
+                old = db["stock"].get(key, 0)
+                db["stock"][key] = row["quantity"]
+                db["counted"][key] = at
                 db["transactions"].append({
-                    "id":str(uuid4()),"created_at":at,"kind":"stocktake",
-                    "group_id":batch_id,"item_id":row["item_id"],
-                    "from_location_id":None,"to_location_id":loc,
-                    "quantity":row["quantity"],"previous_quantity":old,
-                    "delta":row["quantity"]-old,"expected_quantity":old,
-                    "note":p.get("note",""),"actor":p.get("actor")
+                    "id": str(uuid4()), "batch_id": batch_id, "at": at,
+                    "kind": "stocktake", "item_id": row["item_id"],
+                    "from_instance_id": None, "to_instance_id": instance_id,
+                    "quantity": row["quantity"], "previous_quantity": old,
+                    "delta": row["quantity"] - old, "actor": p.get("actor")
                 })
-            receipt={"id":batch_id,"idempotency_key":identity,"area_id":area["id"],
-                     "counts":copy.deepcopy(counts),"at":at,"positions":len(counts)}
-            db["group_batches"].append(receipt)
-            return copy.deepcopy(receipt)
-        if operation == "reset_stock":
-            if p["confirmation"] != "BESTAND LOESCHEN":
-                raise InventoryError("Bestätigung fehlt: BESTAND LOESCHEN")
-            before = len(db["stock"])
+            batch = {"id": batch_id, "instance_id": instance_id,
+                     "idempotency_key": key_id, "counts": copy.deepcopy(rows),
+                     "positions": len(rows), "at": at}
+            db["batches"].append(batch)
+            return copy.deepcopy(batch)
+
+        if op == "book_movement":
+            ident = p["idempotency_key"]
+            prev = next((t for t in db["transactions"] if t.get("idempotency_key") == ident), None)
+            if prev:
+                if any(prev.get(k) != p.get(k) for k in (
+                    "item_id", "kind", "from_instance_id", "to_instance_id", "quantity"
+                )):
+                    raise InventoryError("Idempotenzschlüssel anderweitig verwendet")
+                return copy.deepcopy(prev)
+            item_id = p["item_id"]
+            cls._find(db, "items", item_id)
+            kind = p["kind"]
+            src, dst = p.get("from_instance_id"), p.get("to_instance_id")
+            q = cls._check_qty(p["quantity"], allow_zero=False)
+            if kind == "receipt" and (not dst or src):
+                raise InventoryError("Zielbereich für Zugang erforderlich")
+            if kind == "consume" and (not src or dst):
+                raise InventoryError("Quellbereich für Entnahme erforderlich")
+            if kind == "transfer" and (not src or not dst or src == dst):
+                raise InventoryError("Umlagerung benötigt zwei verschiedene physische Bereiche")
+            for ident in (src, dst):
+                if ident:
+                    cls._find(db, "instances", ident)
+                    if cls._key(item_id, ident) not in db["assignments"]:
+                        raise InventoryError("Artikel in Quell- oder Zielbereich nicht zugeordnet")
+            if src:
+                key = cls._key(item_id, src)
+                if db["stock"].get(key, 0) < q:
+                    raise InventoryError("Nicht genügend Bestand im Quellbereich")
+                db["stock"][key] -= q
+                db["counted"][key] = timestamp()
+            if dst:
+                key = cls._key(item_id, dst)
+                db["stock"][key] = db["stock"].get(key, 0) + q
+                db["counted"][key] = timestamp()
+            tx = {"id": str(uuid4()), "at": timestamp(), "kind": kind,
+                  "item_id": item_id, "from_instance_id": src,
+                  "to_instance_id": dst, "quantity": q,
+                  "idempotency_key": p["idempotency_key"], "actor": p.get("actor")}
+            db["transactions"].append(tx)
+            return copy.deepcopy(tx)
+
+        if op == "reset_stock":
             db["stock"].clear()
             db["counted"].clear()
             db["transactions"].clear()
-            db["group_batches"].clear()
-            db["audit"].append({"id": str(uuid4()), "at": now(), "action": "reset_stock",
-                                "affected_positions": before, "actor": p.get("actor")})
-            return True
-        if operation == "delete_item":
-            item = next((x for x in db["items"] if x["id"] == p["item_id"]), None)
-            if item is None:
-                raise InventoryError("Artikel existiert nicht")
-            if p["confirmation"] != "DELETE:" + item["sku"]:
-                raise InventoryError("Bestätigung muss DELETE:<Artikelnummer> lauten")
-            ident = item["id"]
-            db["items"] = [x for x in db["items"] if x["id"] != ident]
-            for area in db["areas"]:
-                area["item_ids"] = [x for x in area["item_ids"] if x != ident]
-            for key in list(db["item_locations"]):
-                if key.split("|", 1)[0] == ident:
-                    del db["item_locations"][key]
-            db["policies"] = [x for x in db["policies"] if x["item_id"] != ident]
-            db["transactions"] = [x for x in db["transactions"] if x["item_id"] != ident]
-            for key in list(db["stock"]):
-                if key.split("|", 1)[0] == ident:
-                    del db["stock"][key]
-            for key in list(db["counted"]):
-                if key.split("|", 1)[0] == ident:
-                    del db["counted"][key]
-            db["audit"].append({"id": str(uuid4()), "at": now(),
-                                "action": "delete_item", "sku": item["sku"], "name": item["name"],
+            db["batches"].clear()
+            db["audit"].append({"at": timestamp(), "action": op,
                                 "actor": p.get("actor")})
             return True
-        item_ids = {x["id"] for x in db["items"]}
-        location_ids = {x["id"] for x in db["locations"] if x.get("active",True)}
-        if p["item_id"] not in item_ids:
-            raise InventoryError("Unbekannter Artikel")
-        if operation == "set_stock_policy":
-            if p["location_id"] not in location_ids:
-                raise InventoryError("Unbekannter Standort")
-            if not InventoryStore._assigned(db, p["item_id"], p["location_id"]):
-                raise InventoryError("Artikel ist diesem Standort nicht zugeordnet")
-            if p["target_quantity"] < p["min_quantity"]:
-                raise InventoryError("Sollbestand muss mindestens dem Mindestbestand entsprechen")
-            db["policies"] = [x for x in db["policies"]
-                              if (x["item_id"], x["location_id"]) != (p["item_id"], p["location_id"])]
-            db["policies"].append({k: p[k] for k in
-                                  ("item_id", "location_id", "min_quantity", "target_quantity", "reorder_multiple")})
-            return True
-        if operation == "set_count":
-            location = p["location_id"]
-            if location not in location_ids:
-                raise InventoryError("Unbekannter Standort")
-            key = p["item_id"] + "|" + location
-            if not InventoryStore._assigned(db, p["item_id"], location):
-                raise InventoryError("Artikel ist diesem Standort nicht zugeordnet")
-            previous = db["stock"].get(key, 0)
-            identity = p["idempotency_key"]
-            prior_tx = next((t for t in db["transactions"] if t.get("idempotency_key") == identity), None)
-            if prior_tx is not None:
-                if (prior_tx.get("kind") != "stocktake" or prior_tx["item_id"] != p["item_id"]
-                    or prior_tx["to_location_id"] != location or prior_tx["quantity"] != p["quantity"]
-                    or prior_tx.get("expected_quantity") != p["expected_quantity"]):
-                    raise InventoryError("Idempotenzschlüssel für andere Inventur verwendet")
-                return prior_tx
-            if previous != p["expected_quantity"]:
-                raise InventoryError("Bestand wurde zwischenzeitlich geändert; bitte Ansicht aktualisieren")
-            db["stock"][key] = p["quantity"]
-            db["counted"][key] = now()
-            tx = {"id": str(uuid4()), "created_at": now(), "kind": "stocktake",
-                  "item_id": p["item_id"], "from_location_id": None,
-                  "to_location_id": location, "quantity": p["quantity"],
-                  "previous_quantity": previous, "delta": p["quantity"] - previous,
-                  "expected_quantity": previous, "note": p.get("note", ""),
-                  "idempotency_key": identity, "actor": p.get("actor")}
-            db["transactions"].append(tx)
-            return tx
-        if operation != "book_transaction":
-            raise InventoryError("Unbekannte Aktion")
-        kind, q = p["kind"], p["quantity"]
-        identity = p["idempotency_key"]
-        prior_tx = next((x for x in db["transactions"] if x.get("idempotency_key") == identity), None)
-        if prior_tx:
-            if any(prior_tx.get(k) != p.get(k)
-                   for k in ("kind", "item_id", "from_location_id", "to_location_id", "quantity")):
-                raise InventoryError("Idempotenzschlüssel für andere Buchung verwendet")
-            return prior_tx
-        src, dst = p.get("from_location_id"), p.get("to_location_id")
-        if kind in ("consume", "adjustment_out") and (src not in location_ids or dst):
-            raise InventoryError("Quellstandort erforderlich")
-        if kind in ("receipt", "adjustment_in") and (dst not in location_ids or src):
-            raise InventoryError("Zielstandort erforderlich")
-        if kind == "transfer" and (src not in location_ids or dst not in location_ids or src == dst):
-            raise InventoryError("Zwei unterschiedliche Standorte erforderlich")
-        if src and not InventoryStore._assigned(db, p["item_id"], src):
-            raise InventoryError("Artikel ist dem Quellstandort nicht zugeordnet")
-        if dst and not InventoryStore._assigned(db, p["item_id"], dst):
-            raise InventoryError("Artikel ist dem Zielstandort nicht zugeordnet")
-        if src:
-            key = p["item_id"] + "|" + src
-            existing = db["stock"].get(key, 0)
-            if existing < q:
-                raise InventoryError("Nicht ausreichend Bestand")
-            db["stock"][key] = existing - q
-        if dst:
-            key = p["item_id"] + "|" + dst
-            db["stock"][key] = db["stock"].get(key, 0) + q
-        tx = {"id": str(uuid4()), "created_at": now(), "kind": kind,
-              "item_id": p["item_id"], "from_location_id": src,
-              "to_location_id": dst, "quantity": q,
-              "idempotency_key": identity, "note": p.get("note", ""),
-              "actor": p.get("actor")}
-        db["transactions"].append(tx)
-        return tx
+
+        raise InventoryError("Unbekannte Inventaraktion")
+
+    @staticmethod
+    def _drop_instance(db, instance_id):
+        for key in list(db["assignments"]):
+            if key.split("|", 1)[1] == instance_id:
+                db["assignments"].pop(key, None)
+                db["stock"].pop(key, None)
+                db["counted"].pop(key, None)
+        db["instances"] = [x for x in db["instances"] if x["id"] != instance_id]
