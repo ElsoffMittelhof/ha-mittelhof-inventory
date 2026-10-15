@@ -39,7 +39,7 @@ def fresh_data():
             for code, name in DEFAULT_LOCATIONS
         ],
         "templates": [], "instances": [], "assignments": {},
-        "stock": {}, "counted": {}, "transactions": [], "batches": [],
+        "stock": {}, "counted": {}, "policies": [], "transactions": [], "batches": [],
         "audit": [], "next_item_number": 1,
     }
 
@@ -54,7 +54,7 @@ class InventoryStore:
         loaded = await self._store.async_load()
         self.data = loaded if loaded is not None else fresh_data()
         required_lists = ("items", "categories", "locations", "templates",
-                          "instances", "transactions", "batches", "audit")
+                          "instances", "policies", "transactions", "batches", "audit")
         required_maps = ("assignments", "stock", "counted")
         if any(not isinstance(self.data.get(k), list) for k in required_lists) or any(
             not isinstance(self.data.get(k), dict) for k in required_maps
@@ -89,10 +89,22 @@ class InventoryStore:
                 "name": item["name"], "sku": item["sku"], "unit": item["unit"],
                 "category_id": item["category_id"],
             })
+        suggestions=[]
+        for policy in db["policies"]:
+            key=self._key(policy["item_id"],policy["instance_id"])
+            if key not in db["counted"]:
+                continue
+            have=db["stock"].get(key,0)
+            if have<policy["min_quantity"]:
+                missing=max(0,policy["target_quantity"]-have)
+                m=policy["reorder_multiple"]
+                suggestions.append({**copy.deepcopy(policy),"quantity":have,
+                    "suggested_quantity":((missing+m-1)//m)*m})
         return {
             "items": items, "categories": cats, "locations": locations,
             "templates": templates, "instances": instances,
-            "stock": stock, "transactions_count": len(db["transactions"]),
+            "stock": stock, "policies": copy.deepcopy(db["policies"]),
+            "suggestions": suggestions, "transactions_count": len(db["transactions"]),
         }
 
     async def mutate(self, operation, payload):
@@ -194,6 +206,7 @@ class InventoryStore:
             if cls._has_stock(db, item_id=item_id):
                 raise InventoryError("Artikel hat noch Bestand; vorher ausbuchen")
             db["items"] = [i for i in db["items"] if i["id"] != item_id]
+            db["policies"] = [x for x in db["policies"] if x["item_id"] != item_id]
             for key in list(db["assignments"]):
                 if key.split("|", 1)[0] == item_id:
                     db["assignments"].pop(key)
@@ -307,12 +320,31 @@ class InventoryStore:
                     raise InventoryError("Artikel hat noch Bestand im Bereich")
             for key in old:
                 if key not in wanted:
+                    item_id=key.split("|",1)[0]
+                    db["policies"]=[x for x in db["policies"] if not (x["item_id"]==item_id and x["instance_id"]==instance_id)]
                     db["assignments"].pop(key)
                     db["stock"].pop(key, None)
                     db["counted"].pop(key, None)
             for key in wanted:
                 db["assignments"].setdefault(key, True)
             return True
+
+        if op == "set_stock_policy":
+            item_id, instance_id = p["item_id"], p["instance_id"]
+            if cls._key(item_id, instance_id) not in db["assignments"]:
+                raise InventoryError("Artikel muss dem physischen Bereich zugeordnet sein")
+            minimum = cls._check_qty(p["min_quantity"])
+            target = cls._check_qty(p["target_quantity"])
+            multiple = cls._check_qty(p.get("reorder_multiple", 1), allow_zero=False)
+            if target < minimum:
+                raise InventoryError("Sollbestand darf nicht unter Mindestbestand liegen")
+            db["policies"] = [x for x in db["policies"]
+                if (x["item_id"], x["instance_id"]) != (item_id, instance_id)]
+            policy = {"item_id": item_id, "instance_id": instance_id,
+                "min_quantity": minimum, "target_quantity": target,
+                "reorder_multiple": multiple}
+            db["policies"].append(policy)
+            return copy.deepcopy(policy)
 
         if op == "count_instance":
             instance_id = p["instance_id"]
@@ -414,4 +446,5 @@ class InventoryStore:
                 db["assignments"].pop(key, None)
                 db["stock"].pop(key, None)
                 db["counted"].pop(key, None)
+        db["policies"] = [x for x in db["policies"] if x["instance_id"] != instance_id]
         db["instances"] = [x for x in db["instances"] if x["id"] != instance_id]
