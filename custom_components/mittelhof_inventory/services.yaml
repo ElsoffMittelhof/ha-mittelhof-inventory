@@ -1,265 +1,201 @@
-book_transaction:
-  name: Inventarbuchung
-  description: Bucht eine Bestandsbewegung im lokalen Home-Assistant-Inventar.
-  fields:
-    kind:
-      name: Buchungsart
-      required: true
-      selector:
-        select:
-          options: [receipt, consume, transfer, adjustment_in, adjustment_out]
-    item_id:
-      name: Artikel-ID
-      required: true
-      selector: {text: {}}
-    from_location_id:
-      name: Quellstandort-ID
-      selector: {text: {}}
-    to_location_id:
-      name: Zielstandort-ID
-      selector: {text: {}}
-    quantity:
-      name: Anzahl
-      required: true
-      selector: {number: {min: 1, max: 1000000, mode: box}}
-    note:
-      name: Kommentar
-      selector: {text: {}}
-    idempotency_key:
-      name: Idempotenzschlüssel
-      description: Bei Automationen stabil pro Vorgang setzen.
-      selector: {text: {}}
-create_item:
-  name: Artikel anlegen
-  description: Legt einen Artikel an und vergibt die eindeutige Artikelnummer automatisch.
-  fields:
-    location_ids:
-      name: Zuordnung zu Standorten (IDs)
-      selector: {object: {}}
-    category:
-      name: Artikelkategorie
-      selector: {text: {}}
-    manufacturer:
-      name: Hersteller (optional)
-      selector: {text: {}}
-    product_name:
-      name: Genaue Produktbezeichnung / Modell (optional)
-      selector: {text: {}}
-    name:
-      name: Artikelname
-      required: true
-      selector: {text: {}}
-    unit:
-      name: Einheit
-      selector: {text: {}}
-create_location:
-  name: Standort anlegen
-  description: Legt einen Lagerort an.
-  fields:
-    code:
-      name: Kürzel
-      required: true
-      selector: {text: {}}
-    name:
-      name: Standortname
-      required: true
-      selector: {text: {}}
-set_stock_policy:
-  name: Mindest- und Sollbestand
-  description: Konfiguriert Nachbestellvorschläge je Artikel und Standort.
-  fields:
-    item_id:
-      name: Artikel-ID
-      required: true
-      selector: {text: {}}
-    location_id:
-      name: Standort-ID
-      required: true
-      selector: {text: {}}
-    min_quantity:
-      name: Mindestmenge
-      required: true
-      selector: {number: {min: 0, max: 1000000, mode: box}}
-    target_quantity:
-      name: Sollmenge
-      required: true
-      selector: {number: {min: 0, max: 1000000, mode: box}}
-    reorder_multiple:
-      name: Bestellvielfaches
-      selector: {number: {min: 1, max: 1000000, mode: box}}
-set_count:
-  name: Inventur-Istbestand setzen
-  description: Setzt nach Bestätigung eine gezählte absolute Menge an einem Standort (nur Administratoren).
-  fields:
-    item_id:
-      required: true
-      selector: {text: {}}
-    location_id:
-      required: true
-      selector: {text: {}}
-    quantity:
-      name: Gezählt
-      required: true
-      selector: {number: {min: 0, max: 1000000, mode: box}}
-    expected_quantity:
-      name: Bisheriger Buchungsbestand
-      required: true
-      selector: {number: {min: 0, max: 1000000, mode: box}}
-    idempotency_key:
-      selector: {text: {}}
-    note:
-      selector: {text: {}}
-delete_item:
-  name: Artikel unwiderruflich löschen
-  description: Löscht Artikel, dessen Bestände, Regeln und Buchungshistorie (nur Administratoren).
-  fields:
-    item_id:
-      required: true
-      selector: {text: {}}
-    confirmation:
-      name: Bestätigung DELETE:<Artikelnummer>
-      required: true
-      selector: {text: {}}
-reset_stock:
-  name: Gesamten Buchungsbestand löschen
-  description: Löscht alle Bestandspositionen, Zählmarkierungen und Transaktionen. Artikel und Standorte bleiben erhalten (nur Administratoren).
-  fields:
-    confirmation:
-      name: Bestätigung BESTAND LOESCHEN
-      required: true
-      selector: {text: {}}
-
-set_item_locations:
-  name: Artikelstandorte zuordnen
-  description: Setzt die aktiven Standorte eines Artikels atomar. Standorte mit vorhandenem Bestand können nicht entfernt werden.
-  fields:
-    item_id:
-      required: true
-      selector: {text: {}}
-    location_ids:
-      required: true
-      selector: {object: {}}
-set_item_location:
-  name: Einzelnen Artikelstandort zuordnen
-  fields:
-    item_id:
-      required: true
-      selector: {text: {}}
-    location_id:
-      required: true
-      selector: {text: {}}
-    assigned:
-      required: true
-      selector: {boolean: {}}
-
-update_item:
-  name: Artikeldetails aktualisieren
-  description: Ändert den Artikelnamen, die Einheit, den Hersteller und die Produktbezeichnung, nicht die automatisch vergebene Artikelnummer.
-  fields:
-    item_id:
-      required: true
-      selector: {text: {}}
-    name:
-      required: true
-      selector: {text: {}}
-    unit:
-      selector: {text: {}}
-    manufacturer:
-      selector: {text: {}}
-    product_name:
-      selector: {text: {}}
-
 create_category:
-  name: Kategorie hinzufügen
-  description: Legt eine neue frei verwaltbare Artikelkategorie an (Administrator).
+  name: create category
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
   fields:
     name:
-      required: true
+      name: name
       selector: {text: {}}
 update_category:
-  name: Kategorie ändern
+  name: update category
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
   fields:
     category_id:
-      required: true
+      name: category_id
       selector: {text: {}}
     name:
-      required: true
+      name: name
       selector: {text: {}}
-    active:
-      selector: {boolean: {}}
 delete_category:
-  name: Ungenutzte Kategorie löschen
+  name: delete category
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
   fields:
     category_id:
-      required: true
+      name: category_id
       selector: {text: {}}
-    confirmation:
-      required: true
-      selector: {text: {}}
-create_area:
-  name: Inventurbereich anlegen
-  description: Eine Kategorie mit ausgewählten Artikeln am Standort als QR-Gruppe führen.
+create_item:
+  name: create item
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
   fields:
     name:
-      required: true
-      selector: {text: {}}
-    location_id:
-      required: true
+      name: name
       selector: {text: {}}
     category_id:
-      required: true
+      name: category_id
       selector: {text: {}}
-    item_ids:
-      required: true
-      selector: {object: {}}
-update_area:
-  name: Inventurbereich ändern
+    unit:
+      name: unit
+      selector: {text: {}}
+    manufacturer:
+      name: manufacturer
+      selector: {text: {}}
+    product_name:
+      name: product_name
+      selector: {text: {}}
+update_item:
+  name: update item
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
   fields:
-    area_id:
-      required: true
+    item_id:
+      name: item_id
       selector: {text: {}}
     name:
-      required: true
-      selector: {text: {}}
-    location_id:
-      required: true
+      name: name
       selector: {text: {}}
     category_id:
-      required: true
+      name: category_id
       selector: {text: {}}
-    item_ids:
-      required: true
-      selector: {object: {}}
-delete_area:
-  name: Inventurbereich deaktivieren
+    unit:
+      name: unit
+      selector: {text: {}}
+    manufacturer:
+      name: manufacturer
+      selector: {text: {}}
+    product_name:
+      name: product_name
+      selector: {text: {}}
+delete_item:
+  name: delete item
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
   fields:
-    area_id:
-      required: true
+    item_id:
+      name: item_id
       selector: {text: {}}
-    confirmation:
-      required: true
-      selector: {text: {}}
-count_area:
-  name: Gesamten Inventurbereich zählen
-  description: Alle ausgewählten Artikelbestände atomar speichern; bei Konflikt kein Teilbestand.
+create_location:
+  name: create location
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
   fields:
-    area_id:
-      required: true
+    code:
+      name: code
       selector: {text: {}}
-    counts:
-      required: true
-      selector: {object: {}}
-    idempotency_key:
+    name:
+      name: name
       selector: {text: {}}
-    note:
+update_location:
+  name: update location
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    location_id:
+      name: location_id
+      selector: {text: {}}
+    name:
+      name: name
       selector: {text: {}}
 delete_location:
-  name: Standort sicher entfernen
-  description: Entfernt nur Standorte ohne positiven Bestand aus der Anzeige. Historische Buchungen bleiben erhalten.
+  name: delete location
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
   fields:
     location_id:
-      required: true
+      name: location_id
       selector: {text: {}}
-    confirmation:
-      required: true
+create_template:
+  name: create template
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    name:
+      name: name
       selector: {text: {}}
+update_template:
+  name: update template
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    template_id:
+      name: template_id
+      selector: {text: {}}
+    name:
+      name: name
+      selector: {text: {}}
+delete_template:
+  name: delete template
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    template_id:
+      name: template_id
+      selector: {text: {}}
+assign_template:
+  name: assign template
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    template_id:
+      name: template_id
+      selector: {text: {}}
+    location_ids:
+      name: location_ids
+      selector: {object: {}}
+create_instance:
+  name: create instance
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    template_id:
+      name: template_id
+      selector: {text: {}}
+    location_id:
+      name: location_id
+      selector: {text: {}}
+    label:
+      name: label
+      selector: {text: {}}
+delete_instance:
+  name: delete instance
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    instance_id:
+      name: instance_id
+      selector: {text: {}}
+set_instance_items:
+  name: set instance items
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    instance_id:
+      name: instance_id
+      selector: {text: {}}
+    item_ids:
+      name: item_ids
+      selector: {object: {}}
+count_instance:
+  name: count instance
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    instance_id:
+      name: instance_id
+      selector: {text: {}}
+    counts:
+      name: counts
+      selector: {object: {}}
+    idempotency_key:
+      name: idempotency_key
+      selector: {text: {}}
+book_movement:
+  name: book movement
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
+  fields:
+    kind:
+      name: kind
+      selector: {text: {}}
+    item_id:
+      name: item_id
+      selector: {text: {}}
+    from_instance_id:
+      name: from_instance_id
+      selector: {text: {}}
+    to_instance_id:
+      name: to_instance_id
+      selector: {text: {}}
+    quantity:
+      name: quantity
+      selector: {number: {min: 1, max: 1000000, mode: box}}
+    idempotency_key:
+      name: idempotency_key
+      selector: {text: {}}
+reset_stock:
+  name: reset stock
+  description: Mittelhof Inventar v2 – physische Bestandsführung.
