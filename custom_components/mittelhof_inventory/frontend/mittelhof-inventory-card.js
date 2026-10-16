@@ -238,12 +238,14 @@ class InventoryComparison extends Base{
       return;
     }
     const table=dom("table",null,target),thead=dom("thead",null,table),head=dom("tr",null,thead);
+    table.style.minWidth=Math.max(680,result.columns.length*150+300)+"px";
     dom("th","Artikel",head);
     for(const col of result.columns)dom("th",col.site.name,head);
     dom("th","Bewertung",head);
     const body=dom("tbody",null,table);
     for(const row of rows){
       const tr=dom("tr",null,body);
+      if(row.status!=="equal")tr.style.fontWeight="500";
       dom("td",row.item.name,tr);
       for(const cell of row.cells){
         let value="—";
