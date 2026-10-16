@@ -1,6 +1,6 @@
 import "./vendor/qrgen.js";
 import "./vendor/jsQR.js";
-/* Mittelhof Inventar v2.0.0: physical-area stock, no old-area aliases. */
+/* Mittelhof Inventar v2.1.0: physical-area stock, no old-area aliases. */
 const ROUTE="/inventar-dashboard/erfassung";
 const empty=()=>({items:[],categories:[],locations:[],templates:[],instances:[],stock:[]});
 const css=".body{padding:8px 16px 18px}section{padding:10px 0;border-top:1px solid var(--divider-color)}label{display:block;margin:8px 0 4px}input:not([type=checkbox]),select{width:100%;box-sizing:border-box;padding:9px;border:1px solid var(--divider-color);border-radius:6px;background:var(--card-background-color);color:var(--primary-text-color);font:inherit}button{background:var(--primary-color);color:white;border:0;border-radius:6px;padding:10px;margin:7px 6px 5px 0;cursor:pointer}button.danger{background:var(--error-color,#b22)}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:5px}.checks label{margin:0}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:9px}.hint{font-size:.88rem;color:var(--secondary-text-color)}.status{min-height:18px;margin:7px 0}table{width:100%;border-collapse:collapse}td,th{padding:7px;border-bottom:1px solid var(--divider-color);text-align:left}.scroll{overflow-x:auto}.entry{display:grid;grid-template-columns:minmax(140px,1fr) 100px;gap:12px;align-items:center;margin:6px 0}";
@@ -14,6 +14,57 @@ function qrSVG(content){const q=window.qrgen.QrCode.encodeText(content,window.qr
 function safe(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function printLabels(d,base,areas){if(!areas.length)throw Error("Keine Bereiche ausgewählt");const root=new URL(base);if(!["http:","https:"].includes(root.protocol))throw Error("Ungültige URL");const w=window.open("","_blank");if(!w)throw Error("Pop-up blockiert");let pages="";for(let start=0;start<areas.length;start+=24){const labels=areas.slice(start,start+24).map(a=>{const link=new URL(ROUTE,root);link.searchParams.set("inventory_instance",a.id);return '<div class="label">'+qrSVG(link.toString())+'<span>'+safe(instName(d,a))+'</span></div>';}).join("");pages+='<div class="sheet"><div class="grid">'+labels+'</div></div>';}w.document.open();w.document.write('<!doctype html><html><head><meta charset="utf-8"><style>@page{size:A4;margin:0}body{font-family:Arial;margin:0}.sheet{height:297mm;break-after:page}.grid{display:grid;margin:12.9mm 9.75mm;grid-template-columns:repeat(3,63.5mm);grid-auto-rows:33.9mm}.label{display:flex;align-items:center;box-sizing:border-box;padding:2mm;overflow:hidden;font-size:8pt}.label svg{width:26mm;height:26mm;flex-shrink:0}.label span{padding-left:2mm;overflow-wrap:anywhere}</style></head><body>'+pages+'</body></html>');w.document.close();}
 function aggregate(d,selected,category){const items=new Map(d.items.map(x=>[x.id,x])),rows=new Map();for(const r of d.stock){const item=items.get(r.item_id);if(!selected.has(r.location_id)||!item||(category&&item.category_id!==category))continue;let x=rows.get(item.id);if(!x){x={item,count:0,unknown:0};rows.set(item.id,x);}r.counted?x.count+=r.quantity:x.unknown++;}return [...rows.values()].sort((a,b)=>a.item.sku.localeCompare(b.item.sku,"de"));}
+
+/* Compare corresponding logical-area templates across physical locations.
+   Every physical instance contributes its own quantity exactly once. */
+function compareAreas(d,templateId,siteIds,categoryId=""){
+  const items=new Map(d.items.map(i=>[i.id,i]));
+  const records=new Map(d.stock.map(r=>[r.item_id+"|"+r.instance_id,r]));
+  const columns=d.locations.filter(l=>siteIds.has(l.id)).map(site=>({
+    site,instances:d.instances.filter(a=>a.location_id===site.id&&a.template_id===templateId)
+  }));
+  const found=new Set();
+  for(const col of columns)for(const area of col.instances)
+    for(const rec of d.stock.filter(r=>r.instance_id===area.id)){
+      const item=items.get(rec.item_id);
+      if(item&&(!categoryId||item.category_id===categoryId))found.add(item.id);
+    }
+  const rows=[...found].map(id=>{
+    const item=items.get(id);
+    const cells=columns.map(col=>{
+      if(!col.instances.length)return {state:"area_missing",quantity:null,uncounted:0};
+      let quantity=0,uncounted=0,assigned=0;
+      for(const area of col.instances){
+        const rec=records.get(id+"|"+area.id);
+        if(!rec)continue;
+        assigned++;
+        if(rec.counted)quantity+=rec.quantity;
+        else uncounted++;
+      }
+      if(!assigned)return {state:"not_assigned",quantity:null,uncounted:0};
+      return {state:uncounted?(uncounted===assigned?"uncounted":"partial"):"counted",
+        quantity:uncounted===assigned?null:quantity,uncounted,assigned};
+    });
+    const assigned=cells.filter(c=>["counted","partial","uncounted"].includes(c.state));
+    const unknown=cells.some(c=>["area_missing","partial","uncounted"].includes(c.state));
+    const knownQuantities=cells.filter(c=>c.state==="counted").map(c=>c.quantity);
+    let status="equal",reason="Gleich";
+    if(cells.some(c=>c.state==="area_missing")){
+      status="area_missing";reason="Bereich fehlt an Standort";
+    }else if(unknown){
+      status="incomplete";reason="Inventur unvollständig";
+    }else if(assigned.length<columns.length){
+      status="missing";reason=assigned.length===1
+        ? "Nur zugeordnet: "+columns[cells.findIndex(c=>c.state==="counted")].site.name
+        : "Nicht überall zugeordnet";
+    }else if(new Set(knownQuantities).size>1){
+      status="different";reason="Mengenabweichung";
+    }
+    return {item,cells,status,reason};
+  }).sort((a,b)=>a.item.name.localeCompare(b.item.name,"de"));
+  return {columns,rows};
+}
+
 class Base extends HTMLElement{
   setConfig(c){this.config=c||{};}
   set hass(h){this._hass=h;if(!this._ready){this.render();this._ready=true;this.refresh();}}
@@ -57,7 +108,80 @@ class Admin extends Base{
   print(){try{const d=this.data,filter=this.$("qr-location").value;printLabels(d,this.$("base").value,d.instances.filter(a=>!filter||a.location_id===filter));this.status("qr-status","QR-Etikettenbogen geöffnet. Druck 100 %.");}catch(e){this.status("qr-status","QR-Fehler: "+(e.message||e),true);}}
   reset(){if(window.confirm("ALLE Bestände und Buchungen löschen? Artikel/Bereiche bleiben bestehen."))this.run("reset_stock",{},"reset-status");}
 }
-const registry=[["mittelhof-inventory-overview",Overview],["mittelhof-inventory-capture",Capture],["mittelhof-inventory-admin",Admin]];
+
+class InventoryComparison extends Base{
+  render(){
+    this.innerHTML='<ha-card header="Inventurbereiche – Standortvergleich"><div class="body">'+
+      '<p class="hint">Gleichen logischen Inventurbereich zwischen Standorten vergleichen. Mehrere physische Instanzen eines Standorts werden addiert.</p>'+
+      '<label>Logischer Inventurbereich<select id="compare-template"></select></label>'+
+      '<label>Kategorie (optional)<select id="compare-category"></select></label>'+
+      '<strong>Standorte im Vergleich</strong><div id="compare-sites" class="checks"></div>'+
+      '<label><input type="checkbox" id="only-differences"/> Nur Abweichungen / fehlende Inventuren anzeigen</label>'+
+      '<div id="compare-summary" class="hint"></div>'+
+      '<div id="compare-result" class="scroll"></div>'+
+      '<p class="hint">— = Artikel nicht zugeordnet. Nicht gezählt = keine Erstinventur. Bereich fehlt = Vorlage an diesem Standort nicht zugewiesen. Ungezählte Mengen werden nie als Null interpretiert.</p>'+
+      '<div id="status" class="status"></div></div></ha-card><style>'+css+'</style>';
+    this.$("compare-template").onchange=()=>this.update();
+    this.$("compare-category").onchange=()=>this.update();
+    this.$("only-differences").onchange=()=>this.update();
+  }
+  update(){
+    if(!this._ready)return;
+    const d=this.data;
+    options(this.$("compare-template"),d.templates,"Inventurbereich wählen");
+    options(this.$("compare-category"),[{id:"",name:"Alle Kategorien"},...d.categories],"Alle Kategorien");
+    const sites=this.$("compare-sites"),sig=JSON.stringify(d.locations);
+    if(!this._manuallySelected){
+      const houses=d.locations.filter(x=>["13","14","15"].includes(x.code));
+      this._sites=new Set((houses.length?houses:d.locations).map(x=>x.id));
+    }else this._sites=new Set([...this._sites].filter(id=>d.locations.some(x=>x.id===id)));
+    if(sites.dataset.signature!==sig){
+      sites.dataset.signature=sig;
+      checkList(sites,d.locations);
+      for(const cb of sites.querySelectorAll("input[type=checkbox]")){
+        cb.onchange=()=>{this._manuallySelected=true;cb.checked?
+          this._sites.add(cb.value):this._sites.delete(cb.value);this.update();};
+      }
+    }
+    for(const cb of sites.querySelectorAll("input[type=checkbox]"))cb.checked=this._sites.has(cb.value);
+    const target=this.$("compare-result");target.replaceChildren();
+    const templateId=this.$("compare-template").value,categoryId=this.$("compare-category").value;
+    if(!templateId||!this._sites.size){
+      this.$("compare-summary").textContent="Logischen Inventurbereich und mindestens einen Standort wählen.";
+      return;
+    }
+    const result=compareAreas(d,templateId,this._sites,categoryId);
+    const showOnly=this.$("only-differences").checked;
+    const rows=result.rows.filter(r=>!showOnly||r.status!=="equal");
+    const flagged=result.rows.filter(r=>r.status!=="equal").length;
+    this.$("compare-summary").textContent=result.columns.length+" Standorte · "+
+      result.rows.length+" Artikel · "+flagged+" Abweichungen/offene Prüfungen";
+    if(!rows.length){
+      dom("p",showOnly?"Keine Abweichungen in den erfassten Positionen.":"Keine Artikelzuordnungen in diesem Vergleich.",target,"hint");
+      return;
+    }
+    const table=dom("table",null,target),thead=dom("thead",null,table),head=dom("tr",null,thead);
+    dom("th","Artikel",head);
+    for(const col of result.columns)dom("th",col.site.name,head);
+    dom("th","Bewertung",head);
+    const body=dom("tbody",null,table);
+    for(const row of rows){
+      const tr=dom("tr",null,body);
+      dom("td",row.item.name,tr);
+      for(const cell of row.cells){
+        let value="—";
+        if(cell.state==="area_missing")value="Bereich fehlt";
+        if(cell.state==="uncounted")value="Nicht gezählt";
+        if(cell.state==="counted")value=cell.quantity+" "+row.item.unit;
+        if(cell.state==="partial")value=cell.quantity+" "+row.item.unit+" + ungezählt";
+        dom("td",value,tr);
+      }
+      dom("td",row.reason,tr);
+    }
+  }
+}
+
+const registry=[["mittelhof-inventory-overview",Overview],["mittelhof-inventory-comparison",InventoryComparison],["mittelhof-inventory-capture",Capture],["mittelhof-inventory-admin",Admin]];
 for(const [name,ctor] of registry)if(!customElements.get(name))customElements.define(name,ctor);
 window.customCards=window.customCards||[];
 for(const [name] of registry)if(!window.customCards.some(x=>x.type===name))window.customCards.push({type:name,name});
