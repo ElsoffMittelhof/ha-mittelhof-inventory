@@ -17,6 +17,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: node tests/test_qr.cjs
       - run: node tests/test_frontend_v2.cjs
+      - run: node tests/test_frontend_comparison.cjs
       - run: python -c "import json,pathlib;json.loads(pathlib.Path('hacs.json').read_text());json.loads(pathlib.Path('custom_components/mittelhof_inventory/manifest.json').read_text())"
   hacs:
     runs-on: ubuntu-latest
@@ -31,8 +32,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
 
-  release_v200:
-    name: Publish v2.0.0 after successful validation
+  release_v210:
+    name: Publish v2.1.0 after successful validation
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [syntax, hacs, hassfest]
     runs-on: ubuntu-latest
@@ -40,27 +41,30 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Create GitHub Release v2.0.0 if missing
+      - name: Create GitHub Release v2.1.0 if missing
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           version=$(python -c 'import json; print(json.load(open("custom_components/mittelhof_inventory/manifest.json"))["version"])')
-          if [[ "$version" != "2.0.0" ]]; then
-            echo "Manifest version changed; this release job is scoped to v2.0.0."
+          if [[ "$version" != "2.1.0" ]]; then
+            echo "Manifest version changed; this release job is scoped to v2.1.0."
             exit 0
           fi
-          if gh release view v2.0.0 >/dev/null 2>&1; then
-            echo "Release v2.0.0 already exists."
+          if gh release view v2.1.0 >/dev/null 2>&1; then
+            echo "Release v2.1.0 already exists."
             exit 0
           fi
           cat > /tmp/inventory-release-notes.md <<'EOF'
-          Mittelhof Inventar v2.0.0 (Home Assistant / HACS)
+          Mittelhof Inventar v2.1.0 (Home Assistant / HACS)
           
-          - New logical templates and physical-area inventory ledger.
-          - QR links per physical area and dynamic stock aggregation.
-          - Separate clean local database; old test data is not imported.
-          - New complete three-view private dashboard.
+          - Filter physical-area item assignment by one or more selected categories.
+          - Show only item names (and optional manufacturer/model), no article numbers.
+          - Keep assignments in hidden categories intact when selecting or saving.
+          - Compare logical inventory area stock side-by-side across chosen locations.
+          - Identify quantity differences, items present at only one site and unfinished counts.
+          - Add the new Vergleich tab to the complete private four-view dashboard.
+          - Preserve all v2 article records, physical area stock and QR links.
           EOF
-          gh release create v2.0.0 --target "$GITHUB_SHA" --title "v2.0.0" --notes-file /tmp/inventory-release-notes.md
+          gh release create v2.1.0 --target "$GITHUB_SHA" --title "v2.1.0" --notes-file /tmp/inventory-release-notes.md
