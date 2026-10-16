@@ -1,5 +1,31 @@
 # Mittelhof Inventar – Home Assistant / HACS
 
+## v2.1.0 – Artikelzuordnung mit Kategorienfilter und Standortvergleich
+
+**Voraussetzung:** Die Datenbank und das Modell aus v2.0.0 bleiben unverändert. Bestände und Artikelstamm werden vollständig beibehalten.
+
+### Vereinfachte Artikelzuordnung
+
+Unter **Verwaltung → Physische Bereiche: Artikelzuordnung** zuerst den physischen Bereich wählen, danach **eine oder mehrere Kategorien** durch Checkboxen aktivieren. Es erscheinen ausschließlich die Artikel aus den gewählten Kategorien, **nur mit Artikelname**, gegebenenfalls ergänzt um Hersteller/Modell zur Unterscheidung. Die automatisch generierte SKU bleibt intern gespeichert, wird in dieser Zuordnung aber nicht angezeigt.
+
+Kategorien sind reine **Anzeige- und Auswahlfilter**: Ein physischer Bereich kann nach wie vor beliebige Artikel aus mehreren Kategorien enthalten. Das Wechseln der Filter lässt bereits zugeordnete, gerade ausgeblendete Artikel **unverändert**. Der Speichern-Button sendet **sämtliche** aktuell zugeordneten Artikel – auch diejenigen aus ausgeblendeten Kategorien –, und der Backend-Store verhindert weiterhin, dass Artikel mit positivem Bestand irrtümlich aus einem Bereich entfernt werden.
+
+### Neuer Tab „Vergleich“
+
+Das komplette private `dashboards/inventar.yaml` erhält eine **vierte View „Vergleich“**, mit der Custom Card `custom:mittelhof-inventory-comparison`.
+
+- Logischen Inventurbereich auswählen, z. B. `Besteckschublade`.
+- Standorte vergleichen, standardmäßig Ferienhaus 13, 14, 15 (mehrere Checkboxen).
+- Optional nach **Artikelkategorie** filtern.
+- Matrix `Artikel × Standort`, wobei alle physischen Instanzen **derselben logischen Vorlage** innerhalb eines Standorts aufsummiert werden. Dabei wird jedes Artikel×Instanz-Bestandskonto exakt einmal gezählt.
+- Status `Gleich`, `Mengenabweichung`, `Bestand nur in Ferienhaus 13` (oder anderem Standort), `Nicht überall zugeordnet`, `Inventur unvollständig` und `Bereich fehlt an Standort` werden klar getrennt.
+- `—` bedeutet Artikel im Bereich **nicht zugeordnet**; `Nicht gezählt` bedeutet zugeordnet, aber keine Erstinventur; `0 Stück` bedeutet gezählte Null. Zahlen aus noch nicht gezählten Bereichen werden niemals als Null angenommen.
+- `Nur Abweichungen / fehlende Inventuren anzeigen` blendet vollständig gleiche Positionen aus.
+
+**Installation:** In HACS v2.1.0 installieren und Home Assistant neu starten. Genau eine Modulressource `/mittelhof_inventory/frontend/mittelhof-inventory-card.js?v=2.1.0` verwenden und die **gesamte aktualisierte private** `dashboards/inventar.yaml` kopieren, damit die neue Vergleichsseite erscheint. HA-App/Browser vollständig neu starten. Weder v2-Store noch Daten müssen migriert oder gelöscht werden. Hauptdashboard `dashboards/mittelhof.yaml` (fünf Views) und Smoobu-Wäschelogik bleiben unverändert.
+
+Der erweiterte JavaScript-Regressionstest prüft Bereichssummen bei mehreren physischen Schubladen am selben Standort, Zuordnungs-/Zählstatus je Haus, Kategorienfilter und Erhalt ausgeblendeter Artikelzuordnungen. Automatisierte HACS/hassfest-Prüfungen ersetzen nicht die abschließende Prüfung in der laufenden Home-Assistant-App.
+
 ## v2.0.0 – vollständig neues, physisches Inventarmodell
 
 Die Integration führt den Bestand **pro Artikel und physischem Inventurbereich**. Ein logischer Inventurbereich, etwa `Besteckschublade`, ist eine wiederverwendbare Vorlage. Wird sie Ferienhaus 13, 14 und 15 zugewiesen, entstehen drei unabhängig geführte **physische Inventurbereiche**, jeweils mit eigenem QR-Code und eigenen Artikelmengen.
