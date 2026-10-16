@@ -65,6 +65,18 @@ function compareAreas(d,templateId,siteIds,categoryId=""){
   return {columns,rows};
 }
 
+
+function matchingCategoryItems(items,categoryIds){
+  return items.filter(item=>categoryIds.has(item.category_id))
+    .sort((a,b)=>a.name.localeCompare(b.name,"de"));
+}
+function changeAssignmentDraft(draft,itemId,checked){
+  const next=new Set(draft);
+  if(checked)next.add(itemId);
+  else next.delete(itemId);
+  return next;
+}
+
 class Base extends HTMLElement{
   setConfig(c){this.config=c||{};}
   set hass(h){this._hass=h;if(!this._ready){this.render();this._ready=true;this.refresh();}}
@@ -126,8 +138,7 @@ class Admin extends Base{
       return;
     }
     const chosenCategories=this._chosenCategories||new Set();
-    const visible=d.items.filter(i=>chosenCategories.has(i.category_id))
-      .sort((a,b)=>a.name.localeCompare(b.name,"de"));
+    const visible=matchingCategoryItems(d.items,chosenCategories);
     this.$("assign-info").textContent=chosenCategories.size
       ? visible.length+" Artikel der gewählten Kategorien · "+this._assignmentDraft.size+
         " insgesamt zugeordnet (auch ausgeblendete Kategorien)."
@@ -139,8 +150,7 @@ class Admin extends Base{
       cb.value=item.id;
       cb.checked=this._assignmentDraft.has(item.id);
       cb.onchange=()=>{
-        if(cb.checked)this._assignmentDraft.add(item.id);
-        else this._assignmentDraft.delete(item.id);
+        this._assignmentDraft=changeAssignmentDraft(this._assignmentDraft,item.id,cb.checked);
         const status=this.$("assign-info");
         status.textContent=chosenCategories.size+" Kategorien · "+this._assignmentDraft.size+
           " Artikel ausgewählt (inklusive anderer Kategorien).";
