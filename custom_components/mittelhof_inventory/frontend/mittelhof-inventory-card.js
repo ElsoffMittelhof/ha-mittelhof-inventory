@@ -53,10 +53,13 @@ function compareAreas(d,templateId,siteIds,categoryId=""){
       status="area_missing";reason="Bereich fehlt an Standort";
     }else if(unknown){
       status="incomplete";reason="Inventur unvollständig";
+    }else if(columns.length>1&&cells.filter(c=>c.state==="counted"&&c.quantity>0).length===1){
+      const where=cells.findIndex(c=>c.state==="counted"&&c.quantity>0);
+      status="only_stock";
+      reason="Bestand nur in "+columns[where].site.name;
     }else if(assigned.length<columns.length){
-      status="missing";reason=assigned.length===1
-        ? "Nur zugeordnet: "+columns[cells.findIndex(c=>c.state==="counted")].site.name
-        : "Nicht überall zugeordnet";
+      status="missing";
+      reason="Nicht überall zugeordnet";
     }else if(new Set(knownQuantities).size>1){
       status="different";reason="Mengenabweichung";
     }
