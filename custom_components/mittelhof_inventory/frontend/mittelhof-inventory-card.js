@@ -87,12 +87,68 @@ class Capture extends Base{
   async scan(file){if(!file)return;const blob=URL.createObjectURL(file);try{const img=new Image();img.src=blob;await img.decode();const scale=Math.min(1,1300/Math.max(img.naturalWidth,img.naturalHeight)),canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));const ctx=canvas.getContext("2d");ctx.drawImage(img,0,0,canvas.width,canvas.height);const pixels=ctx.getImageData(0,0,canvas.width,canvas.height),decoded=window.jsQR?.(pixels.data,pixels.width,pixels.height,{inversionAttempts:"attemptBoth"})?.data;if(!decoded)throw Error("Kein QR erkannt");const url=new URL(decoded);if(!["https:","http:"].includes(url.protocol)||url.pathname!==ROUTE)throw Error("Ungültiger Inventarlink");const id=url.searchParams.get("inventory_instance");if(!this.data.instances.some(x=>x.id===id))throw Error("Bereich existiert nicht");this.$("instance").value=id;this._sig="";this.update();this.status("qr-status","Bereich erkannt.");}catch(e){this.status("qr-status","QR-Fehler: "+(e.message||e),true);}finally{URL.revokeObjectURL(blob);this.$("photo").value="";}}
 }
 class Admin extends Base{
-  render(){this.innerHTML='<ha-card header="Inventarverwaltung"><div class="body"><section><h3>Kategorien</h3><label>Neu<input id="cat-new"/></label><button id="cat-add">Hinzufügen</button><label>Vorhandene Kategorie<select id="cat"></select></label><label>Name<input id="cat-name"/></label><button id="cat-save">Umbenennen</button><button id="cat-delete" class="danger">Löschen</button><div id="cat-status" class="status"></div></section><section><h3>Artikelstamm</h3><p class="hint">Artikelnummer automatisch, keine Menge oder Pflichtstandort.</p><label>Artikel (leer = neu)<select id="item"></select></label><label>Name<input id="item-name"/></label><div class="row"><label>Kategorie<select id="item-cat"></select></label><label>Einheit<input id="unit" value="Stück"/></label></div><div class="row"><label>Hersteller<input id="manufacturer"/></label><label>Produktmodell<input id="model"/></label></div><button id="item-save">Artikel speichern</button><button id="item-delete" class="danger">Artikel löschen</button><div id="item-status" class="status"></div></section><section><h3>Standorte</h3><label>Standort (leer = neu)<select id="location"></select></label><div class="row"><label>Kürzel<input id="loc-code"/></label><label>Name<input id="loc-name"/></label></div><button id="loc-save">Standort speichern</button><button id="loc-delete" class="danger">Standort löschen</button><div id="loc-status" class="status"></div></section><section><h3>Logische Inventurbereiche</h3><label>Vorlage (leer = neu)<select id="template"></select></label><label>Name<input id="tpl-name"/></label><button id="tpl-save">Vorlage speichern</button><button id="tpl-delete" class="danger">Vorlage löschen</button><p class="hint">Vorlage mehreren Standorten zuweisen:</p><div id="tpl-sites" class="checks"></div><button id="assign">Physische Bereiche anlegen</button><div id="tpl-status" class="status"></div></section><section><h3>Physische Bereiche: Artikelzuordnung</h3><label>Bereich<select id="instance"></select></label><div id="assigned" class="checks"></div><button id="items-save">Artikelzuordnung speichern</button><button id="instance-delete" class="danger">Bereich entfernen</button><div id="area-status" class="status"></div></section><section><h3>QR-Etiketten</h3><label>Vom iPhone erreichbare HA-Adresse<input id="base"/></label><label>Standortfilter<select id="qr-location"></select></label><button id="print">QR-Etiketten drucken</button><div id="qr-status" class="status"></div></section><section><h3>Testbestände</h3><button id="reset" class="danger">Alle Bestände zurücksetzen</button><div id="reset-status" class="status"></div></section><div id="status" class="status"></div></div></ha-card><style>'+css+'</style>';this.$("base").value=window.location.origin;this.$("cat").onchange=()=>{this.$("cat-name").value=this.data.categories.find(x=>x.id===this.$("cat").value)?.name||"";};for(const x of ["item","location","template","instance"])this.$(x).onchange=()=>this["load_"+x]();const actions={"cat-add":()=>this.createCategory(),"cat-save":()=>this.updateCategory(),"cat-delete":()=>this.removeCategory(),"item-save":()=>this.saveItem(),"item-delete":()=>this.removeItem(),"loc-save":()=>this.saveLocation(),"loc-delete":()=>this.removeLocation(),"tpl-save":()=>this.saveTemplate(),"tpl-delete":()=>this.removeTemplate(),"assign":()=>this.assign(),"items-save":()=>this.saveAssignment(),"instance-delete":()=>this.removeInstance(),"print":()=>this.print(),"reset":()=>this.reset()};for(const [id,fn] of Object.entries(actions))this.$(id).onclick=fn;}
+  render(){this.innerHTML='<ha-card header="Inventarverwaltung"><div class="body"><section><h3>Kategorien</h3><label>Neu<input id="cat-new"/></label><button id="cat-add">Hinzufügen</button><label>Vorhandene Kategorie<select id="cat"></select></label><label>Name<input id="cat-name"/></label><button id="cat-save">Umbenennen</button><button id="cat-delete" class="danger">Löschen</button><div id="cat-status" class="status"></div></section><section><h3>Artikelstamm</h3><p class="hint">Artikelnummer automatisch, keine Menge oder Pflichtstandort.</p><label>Artikel (leer = neu)<select id="item"></select></label><label>Name<input id="item-name"/></label><div class="row"><label>Kategorie<select id="item-cat"></select></label><label>Einheit<input id="unit" value="Stück"/></label></div><div class="row"><label>Hersteller<input id="manufacturer"/></label><label>Produktmodell<input id="model"/></label></div><button id="item-save">Artikel speichern</button><button id="item-delete" class="danger">Artikel löschen</button><div id="item-status" class="status"></div></section><section><h3>Standorte</h3><label>Standort (leer = neu)<select id="location"></select></label><div class="row"><label>Kürzel<input id="loc-code"/></label><label>Name<input id="loc-name"/></label></div><button id="loc-save">Standort speichern</button><button id="loc-delete" class="danger">Standort löschen</button><div id="loc-status" class="status"></div></section><section><h3>Logische Inventurbereiche</h3><label>Vorlage (leer = neu)<select id="template"></select></label><label>Name<input id="tpl-name"/></label><button id="tpl-save">Vorlage speichern</button><button id="tpl-delete" class="danger">Vorlage löschen</button><p class="hint">Vorlage mehreren Standorten zuweisen:</p><div id="tpl-sites" class="checks"></div><button id="assign">Physische Bereiche anlegen</button><div id="tpl-status" class="status"></div></section><section><h3>Physische Bereiche: Artikelzuordnung</h3><label>Bereich<select id="instance"></select></label><p class="hint">Zuerst eine oder mehrere Kategorien auswählen. Es erscheinen nur die Artikel dieser Kategorien, ohne Artikelnummer. Bereits zugeordnete Artikel anderer Kategorien bleiben erhalten.</p><div id="assign-categories" class="checks"></div><p id="assign-info" class="hint"></p><div id="assigned" class="checks"></div><button id="items-save">Artikelzuordnung speichern</button><button id="instance-delete" class="danger">Bereich entfernen</button><div id="area-status" class="status"></div></section><section><h3>QR-Etiketten</h3><label>Vom iPhone erreichbare HA-Adresse<input id="base"/></label><label>Standortfilter<select id="qr-location"></select></label><button id="print">QR-Etiketten drucken</button><div id="qr-status" class="status"></div></section><section><h3>Testbestände</h3><button id="reset" class="danger">Alle Bestände zurücksetzen</button><div id="reset-status" class="status"></div></section><div id="status" class="status"></div></div></ha-card><style>'+css+'</style>';this.$("base").value=window.location.origin;this.$("cat").onchange=()=>{this.$("cat-name").value=this.data.categories.find(x=>x.id===this.$("cat").value)?.name||"";};for(const x of ["item","location","template","instance"])this.$(x).onchange=()=>this["load_"+x]();const actions={"cat-add":()=>this.createCategory(),"cat-save":()=>this.updateCategory(),"cat-delete":()=>this.removeCategory(),"item-save":()=>this.saveItem(),"item-delete":()=>this.removeItem(),"loc-save":()=>this.saveLocation(),"loc-delete":()=>this.removeLocation(),"tpl-save":()=>this.saveTemplate(),"tpl-delete":()=>this.removeTemplate(),"assign":()=>this.assign(),"items-save":()=>this.saveAssignment(),"instance-delete":()=>this.removeInstance(),"print":()=>this.print(),"reset":()=>this.reset()};for(const [id,fn] of Object.entries(actions))this.$(id).onclick=fn;}
   update(){if(!this._ready)return;const d=this.data;options(this.$("cat"),d.categories);options(this.$("item-cat"),d.categories);options(this.$("item"),d.items.map(x=>({id:x.id,name:x.sku+" · "+x.name})),"Neuer Artikel");options(this.$("location"),d.locations,"Neuer Standort");options(this.$("template"),d.templates,"Neue Vorlage");options(this.$("instance"),d.instances.map(x=>({id:x.id,name:instName(d,x)})));options(this.$("qr-location"),[{id:"",name:"Alle Standorte"},...d.locations],"Alle Standorte");for(const x of ["item","location","template","instance"])this["load_"+x]();}
   load_item(){const id=this.$("item").value;if(this._loadedItem===id)return;this._loadedItem=id;const x=this.data.items.find(i=>i.id===id);this.$("item-name").value=x?.name||"";this.$("item-cat").value=x?.category_id||"";this.$("unit").value=x?.unit||"Stück";this.$("manufacturer").value=x?.manufacturer||"";this.$("model").value=x?.product_name||"";}
   load_location(){const id=this.$("location").value;if(this._loadedLocation===id)return;this._loadedLocation=id;const x=this.data.locations.find(i=>i.id===id);this.$("loc-code").value=x?.code||"";this.$("loc-code").disabled=!!x;this.$("loc-name").value=x?.name||"";}
   load_template(){const id=this.$("template").value;if(this._loadedTemplate!==id){this._loadedTemplate=id;this.$("tpl-name").value=this.data.templates.find(t=>t.id===id)?.name||"";}const box=this.$("tpl-sites"),sig=JSON.stringify(this.data.locations);if(sig!==box.dataset.sig){box.dataset.sig=sig;checkList(box,this.data.locations);}}
-  load_instance(){const id=this.$("instance").value,sig=id+"|"+JSON.stringify(this.data.items)+"|"+JSON.stringify(this.data.stock.filter(x=>x.instance_id===id).map(x=>x.item_id));if(sig===this._loadedInstance)return;this._loadedInstance=sig;const rows=this.data.items.map(x=>({id:x.id,name:x.sku+" · "+x.name})),assigned=this.data.stock.filter(x=>x.instance_id===id).map(x=>x.item_id);checkList(this.$("assigned"),rows,assigned);}
+
+  load_instance(){
+    const id=this.$("instance").value,d=this.data;
+    const categoryBox=this.$("assign-categories");
+    const catSignature=JSON.stringify(d.categories);
+    if(catSignature!==categoryBox.dataset.sig){
+      const previous=this._chosenCategories||new Set();
+      categoryBox.dataset.sig=catSignature;
+      checkList(categoryBox,d.categories);
+      this._chosenCategories=new Set([...previous].filter(cat=>d.categories.some(x=>x.id===cat)));
+      for(const cb of categoryBox.querySelectorAll("input[type=checkbox]")){
+        cb.checked=this._chosenCategories.has(cb.value);
+        cb.onchange=()=>{
+          if(cb.checked)this._chosenCategories.add(cb.value);
+          else this._chosenCategories.delete(cb.value);
+          this.render_instance_items();
+        };
+      }
+    }
+    if(id!==this._editingInstance){
+      this._editingInstance=id;
+      this._assignmentDraft=new Set(d.stock.filter(x=>x.instance_id===id).map(x=>x.item_id));
+    }
+    this.render_instance_items();
+  }
+  render_instance_items(){
+    const d=this.data,id=this.$("instance").value;
+    const box=this.$("assigned");
+    box.replaceChildren();
+    if(!id){
+      this.$("assign-info").textContent="Bitte zuerst einen physischen Inventurbereich wählen.";
+      return;
+    }
+    const chosenCategories=this._chosenCategories||new Set();
+    const visible=d.items.filter(i=>chosenCategories.has(i.category_id))
+      .sort((a,b)=>a.name.localeCompare(b.name,"de"));
+    this.$("assign-info").textContent=chosenCategories.size
+      ? visible.length+" Artikel der gewählten Kategorien · "+this._assignmentDraft.size+
+        " insgesamt zugeordnet (auch ausgeblendete Kategorien)."
+      : "Bitte mindestens eine Kategorie auswählen. "+this._assignmentDraft.size+
+        " Artikel sind diesem Bereich bereits zugeordnet.";
+    for(const item of visible){
+      const label=dom("label",null,box),cb=dom("input",null,label);
+      cb.type="checkbox";
+      cb.value=item.id;
+      cb.checked=this._assignmentDraft.has(item.id);
+      cb.onchange=()=>{
+        if(cb.checked)this._assignmentDraft.add(item.id);
+        else this._assignmentDraft.delete(item.id);
+        const status=this.$("assign-info");
+        status.textContent=chosenCategories.size+" Kategorien · "+this._assignmentDraft.size+
+          " Artikel ausgewählt (inklusive anderer Kategorien).";
+      };
+      const extra=[item.manufacturer,item.product_name].filter(Boolean).join(" · ");
+      label.append(" "+item.name+(extra?" ("+extra+")":""));
+    }
+  }
   createCategory(){this.run("create_category",{name:this.$("cat-new").value},"cat-status",()=>this.$("cat-new").value="");}
   updateCategory(){this.run("update_category",{category_id:this.$("cat").value,name:this.$("cat-name").value},"cat-status");}
   removeCategory(){if(window.confirm("Kategorie löschen? Nur wenn keinem Artikel zugeordnet."))this.run("delete_category",{category_id:this.$("cat").value},"cat-status");}
@@ -103,8 +159,16 @@ class Admin extends Base{
   saveTemplate(){const id=this.$("template").value,data=id?{template_id:id,name:this.$("tpl-name").value}:{name:this.$("tpl-name").value};this.run(id?"update_template":"create_template",data,"tpl-status",()=>{this._loadedTemplate=null;this.$("template").value="";});}
   removeTemplate(){const id=this.$("template").value;if(id&&window.confirm("Vorlage löschen? Nur wenn nicht an Standorten verwendet."))this.run("delete_template",{template_id:id},"tpl-status");}
   assign(){this.run("assign_template",{template_id:this.$("template").value,location_ids:chosen(this.$("tpl-sites"))},"tpl-status");}
-  saveAssignment(){const id=this.$("instance").value;if(!id)return this.status("area-status","Bereich wählen.",true);this.run("set_instance_items",{instance_id:id,item_ids:chosen(this.$("assigned"))},"area-status",()=>this._loadedInstance="");}
-  removeInstance(){const id=this.$("instance").value;if(id&&window.confirm("Physischen Inventurbereich entfernen? Nur bei 0 Bestand."))this.run("delete_instance",{instance_id:id},"area-status",()=>this._loadedInstance="");}
+  saveAssignment(){
+    const id=this.$("instance").value;
+    if(!id)return this.status("area-status","Bereich wählen.",true);
+    // Crucial: transmit ALL assignments, not only filtered/visible checkboxes.
+    const item_ids=[...this._assignmentDraft];
+    this.run("set_instance_items",{instance_id:id,item_ids},"area-status",()=>{
+      this._editingInstance=null;
+    });
+  }
+  removeInstance(){const id=this.$("instance").value;if(id&&window.confirm("Physischen Inventurbereich entfernen? Nur bei 0 Bestand."))this.run("delete_instance",{instance_id:id},"area-status",()=>{this._editingInstance=null;});}
   print(){try{const d=this.data,filter=this.$("qr-location").value;printLabels(d,this.$("base").value,d.instances.filter(a=>!filter||a.location_id===filter));this.status("qr-status","QR-Etikettenbogen geöffnet. Druck 100 %.");}catch(e){this.status("qr-status","QR-Fehler: "+(e.message||e),true);}}
   reset(){if(window.confirm("ALLE Bestände und Buchungen löschen? Artikel/Bereiche bleiben bestehen."))this.run("reset_stock",{},"reset-status");}
 }
