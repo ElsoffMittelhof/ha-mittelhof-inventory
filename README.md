@@ -1,5 +1,17 @@
 # Mittelhof Inventar – Home Assistant / HACS
 
+## v2.1.1 – Responsives Dashboard und alphabetische Auswahllisten
+
+**Keine Änderung des Datenmodells oder der Bestände.** Alle bestehenden Artikel, Kategorien, Standorte, Inventurbereiche, QR-Codes und Mengen werden unverändert übernommen.
+
+- **Laptop/Desktop:** Die vier vollständigen Inventar-Ansichten (Übersicht, Vergleich, Erfassung, Verwaltung) verwenden im privaten `dashboards/inventar.yaml` nun native Home-Assistant-Panel-Views mit jeweils genau einer `vertical-stack`-Gruppe. Damit wird nicht mehr nur eine schmale Spalte der breiten Bildschirmfläche genutzt.
+- **Responsive Kartendarstellung:** Alle vier Inventarkarten sind auf größeren Viewports zentriert und bis zu **1480 px** breit. Ab einer Breite von 960 px sind Innenabstände und Auswahlraster großzügiger. Auf dem Handy bleiben dieselben Karten einspaltig und innerhalb ihrer Breite; die Vergleichstabelle darf seitlich gescrollt werden.
+- **Konsistente alphabetische Sortierung:** Sämtliche über die zentralen Helfer `options()` und `checkList()` erzeugten Dropdowns und Checkboxlisten werden per deutschem `Intl.Collator("de", {sensitivity: "base", numeric: true})` sortiert. Also auch bei Umlauten sowie `Haus 2` vor `Haus 10`. Ausgewählte Werte bleiben bei Updates und Neuordnung erhalten; die Sortierung verändert niemals gespeicherte Artikel- oder Bereichs-IDs.
+- **Vergleichsansicht:** Die ausgewählten Standortspalten erscheinen ebenfalls aufsteigend nach Standortname.
+- **Regressionstests:** `tests/test_responsive_sorting.cjs` prüft Optionen, Checkboxen, Auswahl-Erhalt, natürliche Sortierung und responsives Karten-CSS; die bisherigen Fachmodell-/Vergleichstests bleiben bestehen.
+
+**Installation:** Vorher Home-Assistant-Backup, HACS auf `v2.1.1` aktualisieren, Home Assistant neu starten, die **einzige** Dashboard-Modulressource auf `/mittelhof_inventory/frontend/mittelhof-inventory-card.js?v=2.1.1` ändern. Anders als bei reinen JS-Fixes ist diesmal unbedingt die **gesamte neue vierseitige `dashboards/inventar.yaml` aus dem privaten Repo** in Home Assistant zu übernehmen: die neuen Panel-View-Einstellungen liegen in dieser Datei. Danach Browser/iPhone-HA-App vollständig neu öffnen. Das private Hauptdashboard mit fünf Views und die Smoobu-Wäscheflows bleiben unverändert.
+
 ## v2.1.0 – Artikelzuordnung mit Kategorienfilter und Standortvergleich
 
 **Voraussetzung:** Die Datenbank und das Modell aus v2.0.0 bleiben unverändert. Bestände und Artikelstamm werden vollständig beibehalten.
