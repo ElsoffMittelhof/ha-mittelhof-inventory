@@ -12,7 +12,8 @@ const extract=(start,finish,name,context={})=>{
   return vm.runInNewContext(source.slice(a,b)+"\n"+name,
     {Map,Set,Array,Number,...context});
 };
-const compareAreas=extract("function compareAreas(","function matchingCategoryItems(","compareAreas");
+const alphabetical=extract("const germanSort=","function serial(","alphabetical",{Intl});
+const compareAreas=extract("function compareAreas(","function matchingCategoryItems(","compareAreas",{alphabetical});
 const matchingCategoryItems=extract("function matchingCategoryItems(","function changeAssignmentDraft(","matchingCategoryItems");
 const changeAssignmentDraft=extract("function changeAssignmentDraft(","class Base extends","changeAssignmentDraft");
 const locations=[
