@@ -62,4 +62,14 @@ assert.ok(source.includes('ha-card{display:block;box-sizing:border-box;width:100
 assert.ok(source.includes('@media(min-width:960px)'));
 assert.ok(source.includes('grid-template-columns:repeat(auto-fit,minmax(140px,1fr))'),
   "old mobile checkbox layout must remain");
+assert.ok(source.includes('name:x.name+" · "+x.sku'),
+  "article dropdown must begin with its alphabetically sortable article name");
+assert.ok(!source.includes('name:x.sku+" · "+x.name'),
+  "SKU must not determine visual article dropdown order");
+const bookingStart=source.indexOf('<select id="kind">');
+const bookingEnd=source.indexOf('</select>',bookingStart);
+assert.ok(bookingStart>0&&bookingEnd>bookingStart);
+const kinds=source.slice(bookingStart,bookingEnd);
+assert.ok(kinds.indexOf('>Entnahme')<kinds.indexOf('>Umlagerung'));
+assert.ok(kinds.indexOf('>Umlagerung')<kinds.indexOf('>Zugang'));
 console.log("Alphabetical dropdown/checkbox sorting and responsive CSS verified");
